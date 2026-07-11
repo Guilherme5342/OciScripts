@@ -51,7 +51,7 @@ param (
     [Parameter(Mandatory=$true, ParameterSetName="LogSearch", HelpMessage="End time (e.g., '2026-07-07 10:00')")]
     [datetime]$EndTime,
 
-    [Parameter(Mandatory=$false, ParameterSetName="LogSearch", HelpMessage="Folder to save the output logs. Defaults to current directory.")]
+    [Parameter(Mandatory=$false, ParameterSetName="LogSearch", HelpMessage="Folder to save the output logs. Defaults to the default output path.")]
     [string]$OutputPath = ".\",
 
     [Parameter(Mandatory=$false, ParameterSetName="LogSearch", HelpMessage="The maximum number of logs to fetch per query. Defaults to 500,000.")]
@@ -61,26 +61,26 @@ param (
     [Parameter(Mandatory=$false, ParameterSetName="Config", HelpMessage="The new OCID to save as the default search scope.")]
     [string]$SearchScope = "",
 
-    [Parameter(Mandatory=$true, ParameterSetName="Config", HelpMessage="Update the default search scope and exit without searching.")]
+    [Parameter(Mandatory=$false, ParameterSetName="Config", HelpMessage="Update the default search scope and exit without searching.")]
     [switch]$SetSearchScope,
+
+    [Parameter(Mandatory=$false, ParameterSetName="Config", HelpMessage="Update the default output path and exit without searching.")]
+    [switch]$SetOutputPath,
 
     [Parameter(Mandatory=$false, HelpMessage="Show the help menu.")]
     [switch]$Help
 )
-
-$IsDebug = $PSBoundParameters.ContainsKey('Debug')
 
 if ($Help) {
     Get-Help $PSCommandPath -Detailed
     return
 }
 
-# Validate pre-requisites
-$ScriptPath = $PSCommandPath
-$ScriptContent = Get-Content -Path $ScriptPath -Raw
+$IS_DEBUG = $PSBoundParameters.ContainsKey('Debug')
+$SCRIPT_PATH = $PSCommandPath
+$SCRIPT_CONTENT = Get-Content -Path $SCRIPT_PATH -Raw
 
-$RegexPattern = '(?i)(\[string\]\$SearchScope\s*=\s*)"([^"]*)"'
-$Match = [regex]::Match($ScriptContent, $RegexPattern)
+$SearchScopeRegexPattern = '(?i)(\[string\]\$SearchScope\s*=\s*)"([^"]*)"'
 
 function Update-Scope {
     param (
@@ -94,42 +94,53 @@ function Update-Scope {
     }
 
     Write-Host "Saving scope as the new default..." -ForegroundColor Cyan
-    $NewContent = $ScriptContent -replace $RegexPattern, ('$1"' + $NewScope + '"')
-    Set-Content -Path $ScriptPath -Value $NewContent
-    Write-Host "[+] Script updated successfully! You won't be asked again.`n" -ForegroundColor Green
+    $NewContent = $SCRIPT_CONTENT -replace $SearchScopeRegexPattern, ('$1"' + $NewScope + '"')
+    Set-Content -Path $SCRIPT_PATH -Value $NewContent
+    Write-Host "[+] Default search scope updated successfully!`n" -ForegroundColor Green
 }
 
-if ($SetSearchScope) {
-    if ([string]::IsNullOrWhiteSpace($SearchScope)) {
-        $SearchScope = Read-Host "Enter the new default search scope"
+if ($SetOutputPath) {
+    $OutputPathRegexPattern = '(?i)(\[string\]\$OutputPath\s*=\s*)"([^"]*)"'
+
+    Write-Host "Enter the new default output path (current: $OutputPath), accepts relative, absolute, or %ENV% paths"
+    $OutputPath = Read-Host "New output path [enter to keep current]"
+
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        return
     }
-    Update-Scope -NewScope $SearchScope
-    return
-}
 
-if ($Match.Success) {
-    $HardcodedScope = $Match.Groups[2].Value
+    $OutputPath = [Environment]::ExpandEnvironmentVariables($OutputPath)
+    if ($OutputPath -notmatch '^[a-zA-Z]:[\\/]') {
+        $OutputPath = Join-Path -Path (Get-Location).Path -ChildPath $OutputPath
+    }
+    $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 
-    if ([string]::IsNullOrWhiteSpace($SearchScope)) {
-        Write-Host "`n[?] No default Search Scope configured." -ForegroundColor Yellow
-        Write-Host "Either pass the -SearchScope flag or set your default scope" -Foreground Yellow
-        $SaveDefault = Read-Host "Would you like to set the default search scope now? (y/n)"
-
-        if ($SaveDefault -eq 'Y' -or $SaveDefault -eq 'y') {
-            $SearchScope = Read-Host "Enter the search scope: "
-            Update-Scope -NewScope $SearchScope
+    if (!(Test-Path -Path $OutputPath)) {
+        $shouldCreate = Read-Host "Folder does not exist. Should we create it? (y/n) "
+        if ($shouldCreate -match '^[Yy]') {
+            New-Item -Path $OutputPath -ItemType Directory -Force | Out-Null
         } else {
             return
         }
     }
-    elseif ([string]::IsNullOrWhiteSpace($HardcodedScope) -and $PSBoundParameters.ContainsKey('SearchScope')) {
-        Write-Host "`n[?] You provided a Search Scope, but the script currently has no default saved." -ForegroundColor Yellow
-        $SaveChoice = Read-Host "Do you want to save this scope as default? (y/n)"
 
-        if ($SaveChoice -eq 'Y' -or $SaveChoice -eq 'y') {
-            Update-Scope -NewScope $SearchScope
-        }
+    Write-Host "Saving output path as the new default..." -ForegroundColor Cyan
+    $NewContent = $SCRIPT_CONTENT -replace $OutputPathRegexPattern, ('$1"' + $OutputPath + '"')
+    Set-Content -Path $SCRIPT_PATH -Value $NewContent
+    Write-Host "[+] Default output path updated successfully!`n" -ForegroundColor Green
+    return
+}
+
+if ($SetSearchScope) {
+    Write-Host "Enter the new default search scope (current: $SearchScope)"
+    $NewSearchScope = Read-Host "New search scope [enter to keep current]"
+
+    if ([string]::IsNullOrWhiteSpace($NewSearchScope)) {
+        return
     }
+
+    Update-Scope -NewScope $NewSearchScope
+    return
 }
 
 if (!(Get-Command oci -ErrorAction SilentlyContinue)) {
@@ -161,6 +172,30 @@ if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
     }
 }
 
+$SearchScopeMatch = [regex]::Match($SCRIPT_CONTENT, $SearchScopeRegexPattern)
+$HardcodedScope = $SearchScopeMatch.Groups[2].Value
+
+if ([string]::IsNullOrWhiteSpace($SearchScope)) {
+    Write-Host "`n[?] No default Search Scope configured." -ForegroundColor Yellow
+    Write-Host "Either pass the -SearchScope flag or set your default scope" -Foreground Yellow
+    $SaveDefault = Read-Host "Would you like to set the default search scope now? (y/n)"
+
+    if ($SaveDefault -eq 'Y' -or $SaveDefault -eq 'y') {
+        $SearchScope = Read-Host "Enter the search scope"
+        Update-Scope -NewScope $SearchScope
+    } else {
+        return
+    }
+}
+elseif ([string]::IsNullOrWhiteSpace($HardcodedScope) -and $PSBoundParameters.ContainsKey('SearchScope')) {
+    Write-Host "`n[?] You provided a Search Scope, but the script currently has no default saved." -ForegroundColor Yellow
+    $SaveChoice = Read-Host "Do you want to save this scope as default? (y/n)"
+
+    if ($SaveChoice -eq 'Y' -or $SaveChoice -eq 'y') {
+        Update-Scope -NewScope $SearchScope
+    }
+}
+
 if ($StartTime -ge $EndTime) {
     Write-Host "[!] Invalid Time Range: EndTime must be greater than StartTime." -ForegroundColor Red
     return
@@ -186,14 +221,20 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "1/3: Pulling raw logs from OCI (Fetching up to $MaxLogsPerQuery logs)..."
 
 $SearchPattern = if ([string]::IsNullOrWhiteSpace($Namespace)) { "*$ResourceName*" } else { "*${Namespace}_*${ResourceName}*" }
-
 $SearchQuery = "search \`"$SearchScope\`" | where subject = '$SearchPattern' | sort by datetime asc"
+$OciArgs = @(
+    "logging-search", "search-logs",
+    "--search-query", $SearchQuery,
+    "--time-start", $StartUtc,
+    "--time-end", $EndUtc,
+    "--limit", $MaxLogsPerQuery
+)
 
 if ($IsDebug) {
-    Write-Host "OCI command: oci logging-search search-logs --search-query `"$SearchQuery`" --time-start $StartUtc --time-end $EndUtc --limit $MaxLogsPerQuery" -ForegroundColor Yellow
+    Write-Host "OCI command: oci $($OciArgs -join ' ')" -ForegroundColor Yellow
 }
 
-$OciRawOutput = & oci logging-search search-logs --search-query $SearchQuery --time-start $StartUtc --time-end $EndUtc --limit $MaxLogsPerQuery 2>&1
+$OciRawOutput = & oci $OciArgs 2>&1
 $OciString = $OciRawOutput -join "`n"
 
 if (!$OciString.Trim().StartsWith("{")) {
@@ -204,9 +245,7 @@ if (!$OciString.Trim().StartsWith("{")) {
 
 $RawMatchCount = [regex]::Matches($OciString, '"logContent"').Count
 
-if ($IsDebug) {
-    Write-Host "     -> OCI found $RawMatchCount logs matching your query." -ForegroundColor Yellow
-}
+Write-Host "     -> OCI found $RawMatchCount logs matching your query." -ForegroundColor Cyan
 
 if ($RawMatchCount -eq 0) {
     Write-Host "`n[!] OCI returned empty results. The pod didn't log anything in this timeframe, or the ResourceName is wrong." -ForegroundColor Yellow
@@ -215,12 +254,13 @@ if ($RawMatchCount -eq 0) {
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($TempJsonPath, $OciString, $Utf8NoBom)
+[System.IO.File]::SetAttributes($TempJsonPath, [System.IO.FileAttributes]::Hidden)
 
 Write-Host "2/3: Parsing log messages with jq..."
 
 $JqFilter = '(.data.results[]?.data?.logContent?.data?.message // empty) | sub(\"^[^ ]+ (stdout|stderr) [A-Z] \"; \"\")'
 
-if ($IsDebug) {
+if ($IS_DEBUG) {
     Write-Host "     -> JQ filter: $JqFilter" -ForegroundColor Yellow
 }
 

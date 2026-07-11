@@ -22,18 +22,24 @@ The standard OCI Web Console limits you to viewing 500 log lines at a time. This
 
 ## ⚙️ Initial Setup (Run Once)
 
-Before fetching logs, the script needs to know which OCI Log Group to search (the "Search Scope"). You only have to do this once per machine — the script will save the setting internally.
+Before fetching logs, the script needs to know which OCI Log Group to search (the "Search Scope"). You only have to do this once per machine — the script can save the setting internally.
 
-Run the configuration command and paste your OCID when prompted:
+To interactively set the default Search Scope (recommended):
 
 ```powershell
 .\getOciLogs.ps1 -SetSearchScope
 ```
 
-Or, pass it in a single line:
+To run a single query with an explicit scope without changing the saved default, pass `-SearchScope` directly. If no default is saved, the script will offer to persist it after the query:
 
 ```powershell
-.\getOciLogs.ps1 -SetSearchScope -SearchScope "ocid1.compartment.oc1..."
+.\getOciLogs.ps1 -SearchScope "ocid1.compartment.oc1..." -ResourceName "my-api" -StartTime "2026-07-09 10:00" -EndTime "2026-07-10 10:00"
+```
+
+To update the default output folder interactively (supports relative paths, absolute paths, and `%ENV%` variables; will create the folder if missing):
+
+```powershell
+.\getOciLogs.ps1 -SetOutputPath
 ```
 
 ## 🚀 Usage
@@ -72,10 +78,11 @@ If you aren't getting the logs you expect, append the built-in `-Debug` flag. Th
 | `-StartTime`       | `DateTime` | **Yes*** | The start of the search window (Local Time, e.g., `2026-07-09 10:00`).  |
 | `-EndTime`         | `DateTime` | **Yes*** | The end of the search window (Local Time).                              |
 | `-Namespace`       | `String`   | No       | The Kubernetes namespace. Highly recommended for accuracy.              |
-| `-OutputPath`      | `String`   | No       | Folder to save the output file. Defaults to `.\` (current directory).   |
+| `-OutputPath`      | `String`   | No       | Folder to save the output file for this run. Defaults to `.`\` (current directory).   |
 | `-MaxLogsPerQuery` | `Int32`    | No       | Max logs to retrieve. Defaults to `500000`.                             |
 | `-SearchScope`     | `String`   | No       | The OCI OCID log group string. (Prompts dynamically if not set).        |
-| `-SetSearchScope`  | `Switch`   | No       | Instantly updates the default search scope and exits without searching. |
+| `-SetSearchScope`  | `Switch`   | No       | Opens an interactive prompt to set the default `SearchScope` saved in the script. Exits after saving (does not perform a search). |
+| `-SetOutputPath`   | `Switch`   | No       | Opens an interactive prompt to set the default `OutputPath` saved in the script. Accepts relative, absolute, or `%ENV%` paths; can create the folder if it doesn't exist. Exits after saving (does not perform a search). Default is the current directory. |
 | `-Help`            | `Switch`   | No       | Displays the built-in help manual.                                      |
 
 ** Mandatory for searching logs, but not required if using `-SetSearchScope`.*
@@ -86,4 +93,4 @@ If you aren't getting the logs you expect, append the built-in `-Debug` flag. Th
 2. **Time Conversion:** The script accepts your local time and automatically converts it to the strictly required OCI ISO-8601 UTC format.
 3. **Wildcard Routing:** If you provide `-Namespace orchestration` and `-ResourceName API`, it generates the precise OCI search query: `*orchestration_*API*`.
 4. **Extraction & Parsing:** It pulls the raw JSON response from OCI, isolates the `results[]` array, and passes it to `jq`.
-5. **Regex Cleaning:** `jq` applies the regex `^[^ ]+ (stdout|stderr) [A-Z] ` to delete the container runtime string, dumping pure application stack traces into your final `.log` file.
+5. **Regex Cleaning:** `jq` applies the regex `^[^ ]+ (stdout|stderr) [A-Z]` to delete the container runtime string, dumping pure application stack traces into your final `.log` file.
