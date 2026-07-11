@@ -1,0 +1,89 @@
+# OCI Kubernetes Log Fetcher (`getOciLogs.ps1`)
+
+A robust PowerShell utility to extract, clean, and consolidate Kubernetes pod logs directly from Oracle Cloud Infrastructure (OCI) Logging Search.
+
+The standard OCI Web Console limits you to viewing 500 log lines at a time. This script bypasses that limitation (fetching up to 500,000 logs by default), automatically formats them, and strips out the noisy Kubernetes runtime boilerplate, leaving you with pure, readable application logs.
+
+## ✨ Features
+
+- **Bypasses Console Limits:** Pulls massive log dumps locally for easy searching in VS Code or Notepad++.
+- **Automatic Noise Filtering:** Uses `jq` to strip away K8s CRI-O timestamps and `stdout F` flags.
+- **Smart Multi-Pod Consolidation:** Merges logs from all pods in a deployment into a single, chronologically sorted file.
+- **Fuzzy Matching:** Supports exact namespaces and partial resource names automatically.
+- **Self-Editing Configuration:** Remembers your OCI Log Group OCID by seamlessly updating its own source code so you never have to mess with configuration files.
+- **Self-Healing Dependencies:** Automatically detects if `jq` is missing, silently installs it via `winget`, dynamically reloads your system `PATH`, and continues execution without missing a beat.
+
+## 📋 Prerequisites
+
+1. **Windows PowerShell** (Standard on Windows).
+2. **OCI CLI**: Must be installed and authenticated on your machine.
+    - Run `oci setup config` if you haven't authenticated before.
+3. **Winget**: (Built into modern Windows) required _only_ if `jq` is not already installed.
+
+## ⚙️ Initial Setup (Run Once)
+
+Before fetching logs, the script needs to know which OCI Log Group to search (the "Search Scope"). You only have to do this once per machine — the script will save the setting internally.
+
+Run the configuration command and paste your OCID when prompted:
+
+```powershell
+.\getOciLogs.ps1 -SetSearchScope
+```
+
+Or, pass it in a single line:
+
+```powershell
+.\getOciLogs.ps1 -SetSearchScope -SearchScope "ocid1.compartment.oc1..."
+```
+
+## 🚀 Usage
+
+Once configured, run the script directly from your terminal.
+
+### Basic Usage
+
+Fetch logs for a specific microservice over a defined time window:
+
+```powershell
+.\getOciLogs.ps1 -ResourceName "geographic-address-management-api" -StartTime "2026-07-09 10:00" -EndTime "2026-07-10 10:00"
+```
+
+### Advanced Usage
+
+Filter by a specific Kubernetes namespace and save the output to a custom directory:
+
+```powershell
+.\getOciLogs.ps1 -ResourceName "problem-api" -Namespace "microservices" -StartTime "2026-07-06 20:00" -EndTime "2026-07-06 23:59" -OutputPath "C:\Logs\"
+```
+
+### Troubleshooting / Debugging
+
+If you aren't getting the logs you expect, append the built-in `-Debug` flag. The script will print the exact OCI query it generates and the exact number of raw logs found before parsing:
+
+```powershell
+.\getOciLogs.ps1 -ResourceName "inventory-orchestrator" -StartTime "2026-07-09 10:00" -EndTime "2026-07-10 10:00" -Debug
+```
+
+## ⚙️ Parameters
+
+| Parameter          | Type       | Required | Description                                                             |
+| ------------------ | ---------- | -------- | ----------------------------------------------------------------------- |
+| `-ResourceName`    | `String`   | **Yes*** | The base name (or partial name) of the deployment/pod.                  |
+| `-StartTime`       | `DateTime` | **Yes*** | The start of the search window (Local Time, e.g., `2026-07-09 10:00`).  |
+| `-EndTime`         | `DateTime` | **Yes*** | The end of the search window (Local Time).                              |
+| `-Namespace`       | `String`   | No       | The Kubernetes namespace. Highly recommended for accuracy.              |
+| `-OutputPath`      | `String`   | No       | Folder to save the output file. Defaults to `.\` (current directory).   |
+| `-MaxLogsPerQuery` | `Int32`    | No       | Max logs to retrieve. Defaults to `500000`.                             |
+| `-SearchScope`     | `String`   | No       | The OCI OCID log group string. (Prompts dynamically if not set).        |
+| `-SetSearchScope`  | `Switch`   | No       | Instantly updates the default search scope and exits without searching. |
+| `-Help`            | `Switch`   | No       | Displays the built-in help manual.                                      |
+
+** Mandatory for searching logs, but not required if using `-SetSearchScope`.*
+
+## 🧠 How it Works Under the Hood
+
+1. **Self-Editing Config:** If no default Search Scope is detected, the script reads its own `$PSCommandPath` and uses regex to permanently bake your chosen OCID into the parameter block for future runs.
+2. **Time Conversion:** The script accepts your local time and automatically converts it to the strictly required OCI ISO-8601 UTC format.
+3. **Wildcard Routing:** If you provide `-Namespace orchestration` and `-ResourceName API`, it generates the precise OCI search query: `*orchestration_*API*`.
+4. **Extraction & Parsing:** It pulls the raw JSON response from OCI, isolates the `results[]` array, and passes it to `jq`.
+5. **Regex Cleaning:** `jq` applies the regex `^[^ ]+ (stdout|stderr) [A-Z] ` to delete the container runtime string, dumping pure application stack traces into your final `.log` file.
