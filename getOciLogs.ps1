@@ -25,7 +25,7 @@ Retrieves logs spanning 24 hours, saves the resulting log file to "C:\Logs\", an
 Displays this detailed help manual.
 
 .NOTES
-Version:        1.0.0
+Version:        1.0.1
 Author:         Guilherme Leal
 Last Updated:   2026-07-11
 
@@ -39,35 +39,35 @@ OCI Logging Query Language: https://docs.oracle.com/pt-br/iaas/Content/Logging/R
 
 [CmdletBinding()]
 param (
-    [Parameter(Mandatory=$true, ParameterSetName="LogSearch", HelpMessage="The base name of the deployment/resource (e.g., resource-inventory-orchestrator)")]
+    [Parameter(Mandatory = $true, ParameterSetName = "LogSearch", HelpMessage = "The base name of the deployment/resource (e.g., resource-inventory-orchestrator)")]
     [string]$ResourceName,
 
-    [Parameter(Mandatory=$false, ParameterSetName="LogSearch", HelpMessage="The Kubernetes namespace (optional, but recommended for accuracy)")]
+    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "The Kubernetes namespace (optional, but recommended for accuracy)")]
     [string]$Namespace = "",
 
-    [Parameter(Mandatory=$true, ParameterSetName="LogSearch", HelpMessage="Start time (e.g., '2026-07-06 10:00')")]
+    [Parameter(Mandatory = $true, ParameterSetName = "LogSearch", HelpMessage = "Start time (e.g., '2026-07-06 10:00')")]
     [datetime]$StartTime,
 
-    [Parameter(Mandatory=$true, ParameterSetName="LogSearch", HelpMessage="End time (e.g., '2026-07-07 10:00')")]
+    [Parameter(Mandatory = $true, ParameterSetName = "LogSearch", HelpMessage = "End time (e.g., '2026-07-07 10:00')")]
     [datetime]$EndTime,
 
-    [Parameter(Mandatory=$false, ParameterSetName="LogSearch", HelpMessage="Folder to save the output logs. Defaults to the default output path.")]
-    [string]$OutputPath = ".\",
+    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "Folder to save the output logs. Defaults to the default output path.")]
+    [string]$OutputPath = "./",
 
-    [Parameter(Mandatory=$false, ParameterSetName="LogSearch", HelpMessage="The maximum number of logs to fetch per query. Defaults to 500,000.")]
+    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "The maximum number of logs to fetch per query. Defaults to 500,000.")]
     [int]$MaxLogsPerQuery = 500000,
 
-    [Parameter(Mandatory=$false, ParameterSetName="LogSearch", HelpMessage="OCID of the search scope. Defaults to the default compartment search scope.")]
-    [Parameter(Mandatory=$false, ParameterSetName="Config", HelpMessage="The new OCID to save as the default search scope.")]
+    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "OCID of the search scope. Defaults to the default compartment search scope.")]
+    [Parameter(Mandatory = $false, ParameterSetName = "Config", HelpMessage = "The new OCID to save as the default search scope.")]
     [string]$SearchScope = "",
 
-    [Parameter(Mandatory=$false, ParameterSetName="Config", HelpMessage="Update the default search scope and exit without searching.")]
+    [Parameter(Mandatory = $false, ParameterSetName = "Config", HelpMessage = "Update the default search scope and exit without searching.")]
     [switch]$SetSearchScope,
 
-    [Parameter(Mandatory=$false, ParameterSetName="Config", HelpMessage="Update the default output path and exit without searching.")]
+    [Parameter(Mandatory = $false, ParameterSetName = "Config", HelpMessage = "Update the default output path and exit without searching.")]
     [switch]$SetOutputPath,
 
-    [Parameter(Mandatory=$false, HelpMessage="Show the help menu.")]
+    [Parameter(Mandatory = $false, HelpMessage = "Show the help menu.")]
     [switch]$Help
 )
 
@@ -80,16 +80,70 @@ $IS_DEBUG = $PSBoundParameters.ContainsKey('Debug')
 $SCRIPT_PATH = $PSCommandPath
 $SCRIPT_CONTENT = Get-Content -Path $SCRIPT_PATH -Raw
 
+if ($SetOutputPath) {
+    $OutputPathRegexPattern = '(?i)(\[string\]\$OutputPath\s*=\s*)"([^"]*)"'
+
+    Write-Host "Enter the new default output path (current: $OutputPath)"
+    Write-Host "You can use relative paths (.\Logs), absolute paths (C:\Logs), or variables (%APPDATA%\Logs)."
+    $NewOutPath = Read-Host "New output path [enter to keep current]"
+
+    if ([string]::IsNullOrWhiteSpace($NewOutPath)) {
+        return
+    }
+
+    if ($NewOutPath -notmatch '^([a-zA-Z]:[\\/]|\\\\|\$PSScriptRoot|%)') {
+        $ResolvedNow = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $NewOutPath))
+
+        $chosen = $false
+        while (-not $chosen) {
+            Write-Host "`nYou entered a relative path. Do you want this to be:" -ForegroundColor Yellow
+            Write-Host " [1] Dynamic : Always save relative to the folder you run the script from in the future."
+            Write-Host " [2] Fixed   : Hardcode it to exactly '$ResolvedNow' forever."
+            $Choice = Read-Host "Choose [1 or 2]"
+
+            switch ($Choice) {
+                '1' { $chosen = $true }
+                '2' { $NewOutPath = $ResolvedNow; $chosen = $true }
+                default { Write-Host "[x] Invalid choice. Please enter 1 or 2." -ForegroundColor Red }
+            }
+        }
+    }
+
+    if (!(Test-Path -Path $OutputPath)) {
+        $shouldCreate = Read-Host "Folder does not exist. Should we create it? (y/n)"
+
+        $chosen = $false
+        $errorMessage = "[x] Invalid folder - The folder '$OutputPath' does not exist."
+        while (-not $chosen) {
+            switch ($shouldCreate) {
+                'Y' { $chosen = $true }
+                'y' { $chosen = $true }
+                'N' { Write-Host $errorMessage -ForegroundColor Red; return }
+                'n' { Write-Host $errorMessage -ForegroundColor Red; return }
+                default { Write-Host "[x] Invalid choice. Please enter y or n." -ForegroundColor Red; $shouldCreate = Read-Host "Should we create it? (y/n)" }
+            }
+        }
+
+        New-Item -ItemType Directory -Path $NewOutPath -Force | Out-Null
+    }
+
+    Write-Host "`nSaving output path as the new default..." -ForegroundColor Cyan
+    $NewContent = $SCRIPT_CONTENT -replace $OutputPathRegexPattern, ('$1"' + $NewOutPath + '"')
+    Set-Content -Path $SCRIPT_PATH -Value $NewContent
+    Write-Host "[+] Default output path updated successfully!`n" -ForegroundColor Green
+    return
+}
+
 $SearchScopeRegexPattern = '(?i)(\[string\]\$SearchScope\s*=\s*)"([^"]*)"'
 
 function Update-Scope {
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$NewScope
     )
 
     if ([string]::IsNullOrWhiteSpace($NewScope)) {
-        Write-Host "[!] Search Scope is required to run this script." -ForegroundColor Red
+        Write-Host "[x] Search Scope is required to run this script." -ForegroundColor Red
         return
     }
 
@@ -97,38 +151,6 @@ function Update-Scope {
     $NewContent = $SCRIPT_CONTENT -replace $SearchScopeRegexPattern, ('$1"' + $NewScope + '"')
     Set-Content -Path $SCRIPT_PATH -Value $NewContent
     Write-Host "[+] Default search scope updated successfully!`n" -ForegroundColor Green
-}
-
-if ($SetOutputPath) {
-    $OutputPathRegexPattern = '(?i)(\[string\]\$OutputPath\s*=\s*)"([^"]*)"'
-
-    Write-Host "Enter the new default output path (current: $OutputPath), accepts relative, absolute, or %ENV% paths"
-    $OutputPath = Read-Host "New output path [enter to keep current]"
-
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-        return
-    }
-
-    $OutputPath = [Environment]::ExpandEnvironmentVariables($OutputPath)
-    if ($OutputPath -notmatch '^[a-zA-Z]:[\\/]') {
-        $OutputPath = Join-Path -Path (Get-Location).Path -ChildPath $OutputPath
-    }
-    $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
-
-    if (!(Test-Path -Path $OutputPath)) {
-        $shouldCreate = Read-Host "Folder does not exist. Should we create it? (y/n) "
-        if ($shouldCreate -match '^[Yy]') {
-            New-Item -Path $OutputPath -ItemType Directory -Force | Out-Null
-        } else {
-            return
-        }
-    }
-
-    Write-Host "Saving output path as the new default..." -ForegroundColor Cyan
-    $NewContent = $SCRIPT_CONTENT -replace $OutputPathRegexPattern, ('$1"' + $OutputPath + '"')
-    Set-Content -Path $SCRIPT_PATH -Value $NewContent
-    Write-Host "[+] Default output path updated successfully!`n" -ForegroundColor Green
-    return
 }
 
 if ($SetSearchScope) {
@@ -149,55 +171,64 @@ if (!(Get-Command oci -ErrorAction SilentlyContinue)) {
 }
 
 if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
-
     $InstallJq = Read-Host "jq is not installed or not in your PATH. Do you want to install it now? (y/n)"
-    if ($InstallJq -eq 'Y' -or $InstallJq -eq 'y') {
-        Write-Host "Installing jq..."
-        winget install jqlang.jq --silent --accept-package-agreements --accept-source-agreements | Out-Null
 
-        $MachinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-        $UserPath    = [Environment]::GetEnvironmentVariable('PATH', 'User')
-
-        $env:PATH = "$MachinePath;$UserPath"
-
-        if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
-            Write-Error "Failed to install or locate jq. Please install it manually."
-            return
+    $chosen = $false
+    $errorMessage = "[x] Please install jq manually (e.g. with winget install jqlang.jq) and ensure it's in your PATH."
+    while (-not $chosen) {
+        switch ($InstallJq) {
+            'Y' { $chosen = $true }
+            'y' { $chosen = $true }
+            'N' { Write-Host $errorMessage -ForegroundColor Red; return }
+            'n' { Write-Host $errorMessage -ForegroundColor Red; return }
+            default { Write-Host "[x] Invalid choice. Please enter y or n." -ForegroundColor Red; $InstallJq = Read-Host "Do you want to install jq now? (y/n)" }
         }
+    }
 
-        Write-Host "jq has been installed successfully." -ForegroundColor Green
-    } else {
-        Write-Host "Please install jq manually (e.g. with winget install jqlang.jq) and ensure it's in your PATH."
+    Write-Host "Installing jq..."
+    winget install jqlang.jq --silent --accept-package-agreements --accept-source-agreements | Out-Null
+
+    $MachinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    $UserPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+
+    $env:PATH = "$MachinePath;$UserPath"
+
+    if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
+        Write-Error "[x] Failed to install or locate jq. Please install it manually." -ForegroundColor Red
         return
     }
+
+    Write-Host "[+] jq has been installed successfully." -ForegroundColor Green
 }
 
 $SearchScopeMatch = [regex]::Match($SCRIPT_CONTENT, $SearchScopeRegexPattern)
 $HardcodedScope = $SearchScopeMatch.Groups[2].Value
+$SearchScopeSetInThisSession = $false
 
 if ([string]::IsNullOrWhiteSpace($SearchScope)) {
-    Write-Host "`n[?] No default Search Scope configured." -ForegroundColor Yellow
+    Write-Host "`n[!] No default Search Scope configured." -ForegroundColor Yellow
     Write-Host "Either pass the -SearchScope flag or set your default scope" -Foreground Yellow
     $SaveDefault = Read-Host "Would you like to set the default search scope now? (y/n)"
 
-    if ($SaveDefault -eq 'Y' -or $SaveDefault -eq 'y') {
-        $SearchScope = Read-Host "Enter the search scope"
-        Update-Scope -NewScope $SearchScope
-    } else {
-        return
+    $chosen = $false
+    $errorMessage = "[x] No Search Scope provided. Please provide a valid scope to continue."
+    while (-not $chosen) {
+        switch ($SaveDefault) {
+            'Y' { $chosen = $true }
+            'y' { $chosen = $true }
+            'N' { Write-Host $errorMessage -ForegroundColor Red; return }
+            'n' { Write-Host $errorMessage -ForegroundColor Red; return }
+            default { Write-Host "[x] Invalid choice. Please enter y or n." -ForegroundColor Red; $SaveDefault = Read-Host "Would you like to set the default search scope now? (y/n)" }
+        }
     }
-}
-elseif ([string]::IsNullOrWhiteSpace($HardcodedScope) -and $PSBoundParameters.ContainsKey('SearchScope')) {
-    Write-Host "`n[?] You provided a Search Scope, but the script currently has no default saved." -ForegroundColor Yellow
-    $SaveChoice = Read-Host "Do you want to save this scope as default? (y/n)"
 
-    if ($SaveChoice -eq 'Y' -or $SaveChoice -eq 'y') {
-        Update-Scope -NewScope $SearchScope
-    }
+    $SearchScope = Read-Host "Enter the search scope"
+    Update-Scope -NewScope $SearchScope
+    $SearchScopeSetInThisSession = $true
 }
 
 if ($StartTime -ge $EndTime) {
-    Write-Host "[!] Invalid Time Range: EndTime must be greater than StartTime." -ForegroundColor Red
+    Write-Host "[x] Invalid Time Range: EndTime must be greater than StartTime." -ForegroundColor Red
     return
 }
 
@@ -211,7 +242,7 @@ $TempJsonPath = Join-Path $AbsoluteOutputPath "temp_oci_raw_$Timestamp.json"
 $FinalLogPath = Join-Path $AbsoluteOutputPath "$ResourceName-$Timestamp.log"
 
 $StartUtc = $StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-$EndUtc   = $EndTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$EndUtc = $EndTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Target Resource : $ResourceName"
@@ -238,7 +269,7 @@ $OciRawOutput = & oci $OciArgs 2>&1
 $OciString = $OciRawOutput -join "`n"
 
 if (!$OciString.Trim().StartsWith("{")) {
-    Write-Host "`n[!] OCI CLI failed to return valid JSON. CLI Error:" -ForegroundColor Red
+    Write-Host "`n[x] OCI CLI failed to return valid JSON. CLI Error:" -ForegroundColor Red
     Write-Host $OciString -ForegroundColor Yellow
     return
 }
@@ -271,11 +302,39 @@ Remove-Item $TempJsonPath -ErrorAction SilentlyContinue
 
 if ((Get-Item $FinalLogPath).Length -eq 0) {
     Write-Host "Raw logs downloaded, but jq failed to parse them. Check the JSON structure." -ForegroundColor Red
-} else {
+}
+else {
     Write-Host "Done! Saved clean logs to: $FinalLogPath" -ForegroundColor Green
 
-    $OpenFile = Read-Host "Open the log file? (y/n)"
-    if ($OpenFile -eq 'Y' -or $OpenFile -eq 'y') {
+    if (!$SearchScopeSetInThisSession -and ![string]::IsNullOrWhiteSpace($SearchScope) -and [string]::IsNullOrWhiteSpace($HardcodedScope)) {
+        Write-Host "`n[!] You provided a Search Scope, but the script currently has no default saved." -ForegroundColor Yellow
+        $SaveChoice = Read-Host "Do you want to save this scope as default? (y/n)"
+
+        $chosen = $false
+        $shouldSave = $false
+        while (-not $chosen) {
+            switch ($SaveChoice) {
+                'Y' { $chosen = $true; $shouldSave = $true }
+                'y' { $chosen = $true; $shouldSave = $true }
+                'N' { $chosen = $true }
+                'n' { $chosen = $true }
+                default { Write-Host "[x] Invalid choice. Please enter y or n." -ForegroundColor Red; $SaveChoice = Read-Host "Do you want to save this scope as default? (y/n)" }
+            }
+        }
+
+        if ($shouldSave) {
+            Update-Scope -NewScope $SearchScope
+        }
+    }
+
+    Write-Host "`nPress [Enter] to open the log file, or any other key to exit..." -NoNewline -ForegroundColor Cyan
+    $KeyPress = [System.Console]::ReadKey($true)
+
+    if ($KeyPress.Key -eq 'Enter') {
+        Write-Host "`nOpening log file..." -ForegroundColor Green
         Start-Process $FinalLogPath
+    }
+    else {
+        Write-Host ""
     }
 }
