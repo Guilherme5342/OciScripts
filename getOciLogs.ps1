@@ -308,7 +308,7 @@ try {
         $TotalLogs += $ChunkCount
 
         if ($ChunkCount -gt 0) {
-            Write-Host "`rPage $($PageCount): Parsing $ChunkCount logs with jq...   " -NoNewline
+            Write-Host "`rPage $($PageCount): Parsing $ChunkCount logs with jq...                                        " -NoNewline
             $CleanLogs = & jq -r $JqFilter $TempJsonPath
 
             if ($null -ne $CleanLogs) {
@@ -326,12 +326,12 @@ try {
             }
 
             $NextPage = $NextPageMatch.Groups[1].Value
-            Write-Host "`rPage $($PageCount): Finished processing. Moving to next page...   " -NoNewline
+            Write-Host "`rPage $($PageCount): Finished processing. Moving to next page...                                        " -NoNewline
             $PageCount++
         }
         else {
             $NextPage = $null
-            Write-Host "`rPage $($PageCount): Finished! Reached the end of the logs.        "
+            Write-Host "`rPage $($PageCount): Finished! Reached the end of the logs.                                        "
         }
     } while ($NextPage)
 }
