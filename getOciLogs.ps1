@@ -25,7 +25,7 @@ Retrieves logs spanning 24 hours, saves the resulting log file to "C:\Logs\", an
 Displays this detailed help manual.
 
 .NOTES
-Version:        1.0.1
+Version:        1.0.2
 Author:         Guilherme Leal
 Last Updated:   2026-07-11
 
@@ -53,9 +53,6 @@ param (
 
     [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "Folder to save the output logs. Defaults to the default output path.")]
     [string]$OutputPath = "./",
-
-    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "The maximum number of logs to fetch per query. Defaults to 500,000.")]
-    [int]$MaxLogsPerQuery = 500000,
 
     [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "OCID of the search scope. Defaults to the default compartment search scope.")]
     [Parameter(Mandatory = $false, ParameterSetName = "Config", HelpMessage = "The new OCID to save as the default search scope.")]
@@ -201,10 +198,7 @@ if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
     Write-Host "[+] jq has been installed successfully." -ForegroundColor Green
 }
 
-$SearchScopeMatch = [regex]::Match($SCRIPT_CONTENT, $SearchScopeRegexPattern)
-$HardcodedScope = $SearchScopeMatch.Groups[2].Value
 $SearchScopeSetInThisSession = $false
-
 if ([string]::IsNullOrWhiteSpace($SearchScope)) {
     Write-Host "`n[!] No default Search Scope configured." -ForegroundColor Yellow
     Write-Host "Either pass the -SearchScope flag or set your default scope" -Foreground Yellow
@@ -236,11 +230,6 @@ if (!(Test-Path $OutputPath)) {
     New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 }
 
-$AbsoluteOutputPath = (Get-Item $OutputPath).FullName
-$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$TempJsonPath = Join-Path $AbsoluteOutputPath "temp_oci_raw_$Timestamp.json"
-$FinalLogPath = Join-Path $AbsoluteOutputPath "$ResourceName-$Timestamp.log"
-
 $StartUtc = $StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 $EndUtc = $EndTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
@@ -249,62 +238,118 @@ Write-Host "Target Resource : $ResourceName"
 Write-Host "Time Range (UTC): $StartUtc to $EndUtc"
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "1/3: Pulling raw logs from OCI (Fetching up to $MaxLogsPerQuery logs)..."
+Write-Host "1/3: Fetching logs from OCI..."
 
-$SearchPattern = if ([string]::IsNullOrWhiteSpace($Namespace)) { "*$ResourceName*" } else { "*${Namespace}_*${ResourceName}*" }
-$SearchQuery = "search \`"$SearchScope\`" | where subject = '$SearchPattern' | sort by datetime asc"
-$OciArgs = @(
-    "logging-search", "search-logs",
-    "--search-query", $SearchQuery,
-    "--time-start", $StartUtc,
-    "--time-end", $EndUtc,
-    "--limit", $MaxLogsPerQuery
-)
+$AbsoluteOutputPath = (Get-Item $OutputPath).FullName
+$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 
-if ($IsDebug) {
-    Write-Host "OCI command: oci $($OciArgs -join ' ')" -ForegroundColor Yellow
-}
+$TempJsonPath = Join-Path $env:TEMP "oci_raw_$Timestamp.json"
+$TempErrPath = Join-Path $env:TEMP "oci_err_$Timestamp.txt"
 
-$OciRawOutput = & oci $OciArgs 2>&1
-$OciString = $OciRawOutput -join "`n"
-
-if (!$OciString.Trim().StartsWith("{")) {
-    Write-Host "`n[x] OCI CLI failed to return valid JSON. CLI Error:" -ForegroundColor Red
-    Write-Host $OciString -ForegroundColor Yellow
-    return
-}
-
-$RawMatchCount = [regex]::Matches($OciString, '"logContent"').Count
-
-Write-Host "     -> OCI found $RawMatchCount logs matching your query." -ForegroundColor Cyan
-
-if ($RawMatchCount -eq 0) {
-    Write-Host "`n[!] OCI returned empty results. The pod didn't log anything in this timeframe, or the ResourceName is wrong." -ForegroundColor Yellow
-    return
-}
-
-$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($TempJsonPath, $OciString, $Utf8NoBom)
-[System.IO.File]::SetAttributes($TempJsonPath, [System.IO.FileAttributes]::Hidden)
-
-Write-Host "2/3: Parsing log messages with jq..."
+$FinalLogPath = Join-Path $AbsoluteOutputPath "$ResourceName-$Timestamp.log"
 
 $JqFilter = '(.data.results[]?.data?.logContent?.data?.message // empty) | sub(\"^[^ ]+ (stdout|stderr) [A-Z] \"; \"\")'
 
-if ($IS_DEBUG) {
-    Write-Host "     -> JQ filter: $JqFilter" -ForegroundColor Yellow
+$SearchPattern = if ([string]::IsNullOrWhiteSpace($Namespace)) { "*$ResourceName*" } else { "*${Namespace}_*${ResourceName}*" }
+$SearchQuery = "search \`"$SearchScope\`" | where subject = '$SearchPattern' | sort by datetime asc"
+
+$NextPage = $null
+$PageCount = 1
+$TotalLogs = 0
+$ChunkLimit = 1000 # OCI limits the number of logs per call to 1k (╯‵□′)╯︵┻━┻
+[System.Console]::CursorVisible = $false
+
+try {
+    do {
+        $OciArgsString = "logging-search search-logs --search-query `"$SearchQuery`" --time-start $StartUtc --time-end $EndUtc --limit $ChunkLimit"
+
+        if (![string]::IsNullOrWhiteSpace($NextPage)) {
+            $OciArgsString += " --page $NextPage"
+        }
+
+        if ($IS_DEBUG) {
+            Write-Host "`nOCI command: oci $OciArgsString" -ForegroundColor Yellow
+        }
+
+        $BaseText = "Page $($PageCount): Searching logs"
+        $Dots = @(".", "..", "...")
+        $Counter = 0
+
+        Remove-Item $TempJsonPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $TempErrPath -Force -ErrorAction SilentlyContinue
+
+        $OciProcess = Start-Process -FilePath "oci" -ArgumentList $OciArgsString -RedirectStandardOutput $TempJsonPath -RedirectStandardError $TempErrPath -NoNewWindow -PassThru
+
+        while (!$OciProcess.HasExited) {
+            Write-Host "`r$BaseText$($Dots[$Counter % 3])   " -NoNewline
+            $Counter++
+            Start-Sleep -Milliseconds 333
+        }
+
+        $OciString = Get-Content -Path $TempJsonPath -Raw -ErrorAction SilentlyContinue
+
+        if ([string]::IsNullOrWhiteSpace($OciString) -or !$OciString.Trim().StartsWith("{")) {
+            $OciError = Get-Content -Path $TempErrPath -Raw -ErrorAction SilentlyContinue
+            Write-Host "`n[!] OCI CLI failed or returned invalid JSON on Page $PageCount. Error:" -ForegroundColor Red
+
+            if (![string]::IsNullOrWhiteSpace($OciError)) {
+                Write-Host $OciError -ForegroundColor Red
+            }
+            elseif (![string]::IsNullOrWhiteSpace($OciString)) {
+                Write-Host $OciString -ForegroundColor Red
+            }
+            else {
+                Write-Host "Unknown error. Check your OCI authentication." -ForegroundColor Red
+            }
+            return
+        }
+
+        $ChunkCount = [regex]::Matches($OciString, '"logContent"').Count
+        $TotalLogs += $ChunkCount
+
+        if ($ChunkCount -gt 0) {
+            Write-Host "`rPage $($PageCount): Parsing $ChunkCount logs with jq...   " -NoNewline
+            $CleanLogs = & jq -r $JqFilter $TempJsonPath
+
+            if ($null -ne $CleanLogs) {
+                $LogBlock = $CleanLogs -join "`n"
+                [System.IO.File]::AppendAllText($FinalLogPath, $LogBlock + "`n")
+            }
+        }
+
+        $NextPageMatch = [regex]::Match($OciString, '"opc-next-page"\s*:\s*"([^"]+)"')
+
+        if ($NextPageMatch.Success) {
+            if ($NextPage -eq $NextPageMatch.Groups[1].Value) {
+                Write-Host "`n[!] OCI API returned the exact same token. Stopping to prevent infinite loop." -ForegroundColor Yellow
+                break
+            }
+
+            $NextPage = $NextPageMatch.Groups[1].Value
+            Write-Host "`rPage $($PageCount): Finished processing. Moving to next page...   " -NoNewline
+            $PageCount++
+        }
+        else {
+            $NextPage = $null
+            Write-Host "`rPage $($PageCount): Finished! Reached the end of the logs.        "
+        }
+    } while ($NextPage)
+}
+finally {
+    [System.Console]::CursorVisible = $true
 }
 
-& jq -r $JqFilter $TempJsonPath > $FinalLogPath
+Remove-Item $TempJsonPath -Force -ErrorAction SilentlyContinue
 
-Write-Host "3/3: Cleaning up..."
-Remove-Item $TempJsonPath -ErrorAction SilentlyContinue
-
-if ((Get-Item $FinalLogPath).Length -eq 0) {
-    Write-Host "Raw logs downloaded, but jq failed to parse them. Check the JSON structure." -ForegroundColor Red
+if ($TotalLogs -eq 0) {
+    Write-Host "`n[!] OCI returned empty results. The pod didn't log anything in this timeframe, or the ResourceName is wrong." -ForegroundColor Yellow
 }
 else {
-    Write-Host "Done! Saved clean logs to: $FinalLogPath" -ForegroundColor Green
+    Write-Host "`nDone! Processed $PageCount pages and saved $TotalLogs total logs to:" -ForegroundColor Green
+    Write-Host $FinalLogPath -ForegroundColor Cyan
+
+    $SearchScopeMatch = [regex]::Match($SCRIPT_CONTENT, $SearchScopeRegexPattern)
+    $HardcodedScope = $SearchScopeMatch.Groups[2].Value
 
     if (!$SearchScopeSetInThisSession -and ![string]::IsNullOrWhiteSpace($SearchScope) -and [string]::IsNullOrWhiteSpace($HardcodedScope)) {
         Write-Host "`n[!] You provided a Search Scope, but the script currently has no default saved." -ForegroundColor Yellow

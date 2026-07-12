@@ -2,7 +2,7 @@
 
 A robust PowerShell utility to extract, clean, and consolidate Kubernetes pod logs directly from Oracle Cloud Infrastructure (OCI) Logging Search.
 
-The standard OCI Web Console limits you to viewing 500 log lines at a time. This script bypasses that limitation (fetching up to 500,000 logs by default), automatically formats them, and strips out the noisy Kubernetes runtime boilerplate, leaving you with pure, readable application logs.
+The standard OCI Web Console limits you to viewing 500 log lines at a time. This script bypasses that limitation (fetching all the logs using OCI's CLI pagination), automatically formats them, and strips out the noisy Kubernetes runtime boilerplate, leaving you with pure, readable application logs.
 
 ## ✨ Features
 
@@ -72,18 +72,17 @@ If you aren't getting the logs you expect, append the built-in `-Debug` flag. Th
 
 ## ⚙️ Parameters
 
-| Parameter          | Type       | Required | Description                                                             |
-| ------------------ | ---------- | -------- | ----------------------------------------------------------------------- |
-| `-ResourceName`    | `String`   | **Yes*** | The base name (or partial name) of the deployment/pod.                  |
-| `-StartTime`       | `DateTime` | **Yes*** | The start of the search window (Local Time, e.g., `2026-07-09 10:00`).  |
-| `-EndTime`         | `DateTime` | **Yes*** | The end of the search window (Local Time).                              |
-| `-Namespace`       | `String`   | No       | The Kubernetes namespace. Highly recommended for accuracy.              |
-| `-OutputPath`      | `String`   | No       | Folder to save the output file for this run. Defaults to `.`\` (current directory).   |
-| `-MaxLogsPerQuery` | `Int32`    | No       | Max logs to retrieve. Defaults to `500000`.                             |
-| `-SearchScope`     | `String`   | No       | The OCI OCID log group string. (Prompts dynamically if not set).        |
-| `-SetSearchScope`  | `Switch`   | No       | Opens an interactive prompt to set the default `SearchScope` saved in the script. Exits after saving (does not perform a search). |
-| `-SetOutputPath`   | `Switch`   | No       | Opens an interactive prompt to set the default `OutputPath` saved in the script. Accepts relative, absolute, or `%ENV%` paths; can create the folder if it doesn't exist. Exits after saving (does not perform a search). Default is the current directory. |
-| `-Help`            | `Switch`   | No       | Displays the built-in help manual.                                      |
+| Parameter         | Type       | Required | Description                                                                                                                                                                                                                                                 |
+| ----------------- | ---------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-ResourceName`   | `String`   | **Yes*** | The base name (or partial name) of the deployment/pod.                                                                                                                                                                                                      |
+| `-StartTime`      | `DateTime` | **Yes*** | The start of the search window (Local Time, e.g., `2026-07-09 10:00`).                                                                                                                                                                                      |
+| `-EndTime`        | `DateTime` | **Yes*** | The end of the search window (Local Time).                                                                                                                                                                                                                  |
+| `-Namespace`      | `String`   | No       | The Kubernetes namespace. Highly recommended for accuracy.                                                                                                                                                                                                  |
+| `-OutputPath`     | `String`   | No       | Folder to save the output file for this run. Defaults to `.`\` (current directory).                                                                                                                                                                         |
+| `-SearchScope`    | `String`   | No       | The OCI OCID log group string. (Prompts dynamically if not set).                                                                                                                                                                                            |
+| `-SetSearchScope` | `Switch`   | No       | Opens an interactive prompt to set the default `SearchScope` saved in the script. Exits after saving (does not perform a search).                                                                                                                           |
+| `-SetOutputPath`  | `Switch`   | No       | Opens an interactive prompt to set the default `OutputPath` saved in the script. Accepts relative, absolute, or `%ENV%` paths; can create the folder if it doesn't exist. Exits after saving (does not perform a search). Default is the current directory. |
+| `-Help`           | `Switch`   | No       | Displays the built-in help manual.                                                                                                                                                                                                                          |
 
 ** Mandatory for searching logs, but not required if using `-SetSearchScope`.*
 
