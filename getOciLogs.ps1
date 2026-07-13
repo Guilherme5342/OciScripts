@@ -25,9 +25,9 @@ Retrieves logs spanning 24 hours, saves the resulting log file to "C:\Logs\", an
 Displays this detailed help manual.
 
 .NOTES
-Version:        1.1.0
+Version:        2.0.0
 Author:         Guilherme Leal
-Last Updated:   2026-07-11
+Last Updated:   2026-07-12
 
 Prerequisites:
 - OCI CLI must be installed and authenticated on the host machine.
@@ -51,12 +51,11 @@ param (
     [Parameter(Mandatory = $true, ParameterSetName = "LogSearch", HelpMessage = "End time (e.g., '2026-07-07 10:00')")]
     [datetime]$EndTime,
 
-    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "Folder to save the output logs. Defaults to the default output path.")]
-    [string]$OutputPath = "./",
+    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "Folder to save the output logs. Defaults to the path in the config file.")]
+    [string]$OutputPath,
 
-    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "OCID of the search scope. Defaults to the default compartment search scope.")]
-    [Parameter(Mandatory = $false, ParameterSetName = "Config", HelpMessage = "The new OCID to save as the default search scope.")]
-    [string]$SearchScope = "",
+    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "OCID of the search scope. Defaults to the search scope in the config file.")]
+    [string]$SearchScope,
 
     [Parameter(Mandatory = $false, ParameterSetName = "Config", HelpMessage = "Update the default search scope and exit without searching.")]
     [switch]$SetSearchScope,
@@ -68,149 +67,151 @@ param (
     [switch]$Help
 )
 
-if ($Help) {
-    Get-Help $PSCommandPath -Detailed
-    return
+class Logger {
+    error([string]$msg)     { Write-Host "[x] $msg" -ForegroundColor DarkRed }
+    warn([string]$msg)      { Write-Host "[!] $msg" -ForegroundColor DarkYellow }
+    info([string]$msg)      { Write-Host "[?] $msg" -ForegroundColor DarkBlue }
+    important([string]$msg) { Write-Host "[*] $msg" -ForegroundColor DarkCyan }
+    success([string]$msg)   { Write-Host "[+] $msg" -ForegroundColor DarkGreen }
+    write([string]$msg)     { Write-Host "$msg" -ForegroundColor White }
+    debug([string]$msg) {
+        if ($script:IS_DEBUG) { Write-Host "[#] $msg" -ForegroundColor Gray }
+    }
+    cmd([string]$cmd, [string]$argsList) {
+        if (!$script:IS_DEBUG) { return }
+
+        Write-Host "[#] $cmd $argsList" -ForegroundColor Gray
+    }
 }
 
-$IS_DEBUG = $PSBoundParameters.ContainsKey('Debug')
-$SCRIPT_PATH = $PSCommandPath
-$SCRIPT_CONTENT = Get-Content -Path $SCRIPT_PATH -Raw
+function Confirm-Choice {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
 
-if ($SetOutputPath) {
-    $OutputPathRegexPattern = '(?i)(\[string\]\$OutputPath\s*=\s*)"([^"]*)"'
+        [string]$Title = "Confirm",
+        [string]$YesText = "Yes",
+        [string]$NoText = "No",
+        [int]$DefaultChoice = 0
+    )
+    $Choices = [System.Management.Automation.Host.ChoiceDescription[]]@(
+        [System.Management.Automation.Host.ChoiceDescription]::new("&Yes", $YesText)
+        [System.Management.Automation.Host.ChoiceDescription]::new("&No", $NoText)
+    )
+    $DefaultChoice = $DefaultChoice
+    $Decision = $Host.UI.PromptForChoice($Title, $Prompt, $Choices, $DefaultChoice)
+    if ($Decision -eq 0) {
+        return $true
+    } else {
+        return $false
+    }
+}
 
-    Write-Host "Enter the new default output path (current: $OutputPath)"
-    Write-Host "You can use relative paths (.\Logs), absolute paths (C:\Logs), or variables (%APPDATA%\Logs)."
-    $NewOutPath = Read-Host "New output path [enter to keep current]"
+function Select-Option {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string[]]$Options,
 
-    if ([string]::IsNullOrWhiteSpace($NewOutPath)) {
-        return
+        [string]$Prompt = "Please select an option:",
+        [string]$Title = "Selection",
+        [int]$DefaultChoice = 0
+    )
+
+    $Choices = [System.Management.Automation.Host.ChoiceDescription[]]@()
+
+    for ($i = 0; $i -lt $Options.Count; $i++) {
+        $Shortcut = ($i + 1).ToString()
+        $Label = "&$Shortcut. $($Options[$i])"
+        $Choices += [System.Management.Automation.Host.ChoiceDescription]::new($Label, "Select $($Options[$i])")
     }
 
-    if ($NewOutPath -notmatch '^([a-zA-Z]:[\\/]|\\\\|\$PSScriptRoot|%)') {
-        $ResolvedNow = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $NewOutPath))
+    $Decision = $Host.UI.PromptForChoice($Title, $Prompt, $Choices, $DefaultChoice)
 
-        $chosen = $false
-        while (-not $chosen) {
-            Write-Host "`nYou entered a relative path. Do you want this to be:" -ForegroundColor Yellow
-            Write-Host " [1] Dynamic : Always save relative to the folder you run the script from in the future."
-            Write-Host " [2] Fixed   : Hardcode it to exactly '$ResolvedNow' forever."
-            $Choice = Read-Host "Choose [1 or 2]"
+    return $Decision
+}
 
-            switch ($Choice) {
-                '1' { $chosen = $true }
-                '2' { $NewOutPath = $ResolvedNow; $chosen = $true }
-                default { Write-Host "[x] Invalid choice. Please enter 1 or 2." -ForegroundColor Red }
-            }
+function Read {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
+
+        [string]$Default = "",
+        [string]$Placeholder = "Press Enter to use the default"
+    )
+    $log.write("$Prompt (Default: ""$Default"")")
+    Write-Host "> " -NoNewLine -ForegroundColor DarkCyan
+    $userInput = $Host.UI.ReadLine()
+
+    if ([string]::IsNullOrWhiteSpace($userInput)) {
+        return $Default
+    }
+    return $userInput
+}
+
+function Read-Path {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
+
+        [string]$Default = ".\",
+        [string]$Placeholder = "Press Enter to use the default"
+    )
+
+    $NewPath = Read -Prompt "$Prompt `nYou can use relative paths [.\Logs], absolute paths [C:\Logs], or variables [%APPDATA%\Logs]." -Default $Default -Placeholder $Placeholder
+
+    if ($Default -eq $NewPath) {
+        return $Default
+    }
+
+    if ($NewPath -notmatch '^([a-zA-Z]:[\\/]|\\\\|\$PSScriptRoot|%)') {
+        $ResolvedNow = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $NewPath))
+
+        $chosen = Select-Option -Prompt "`nYou entered a relative path. Do you want this to be:" -Options @(
+            "Dynamic: Relative to the folder you run the script from in the future."
+            "Fixed: Hardcode it to exactly '$ResolvedNow' forever."
+        )
+
+        if ($chosen -eq 1) {
+            $NewPath = $ResolvedNow
         }
     }
 
-    if (!(Test-Path -Path $OutputPath)) {
-        $shouldCreate = Read-Host "Folder does not exist. Should we create it? (y/n)"
+    if (!(Test-Path -Path $NewPath)) {
+        $shouldCreate = Confirm-Choice -Prompt "Folder does not exist. Should we create it?"
 
-        $chosen = $false
-        $errorMessage = "[x] Invalid folder - The folder '$OutputPath' does not exist."
-        while (-not $chosen) {
-            switch ($shouldCreate) {
-                'Y' { $chosen = $true }
-                'y' { $chosen = $true }
-                'N' { Write-Host $errorMessage -ForegroundColor Red; return }
-                'n' { Write-Host $errorMessage -ForegroundColor Red; return }
-                default { Write-Host "[x] Invalid choice. Please enter y or n." -ForegroundColor Red; $shouldCreate = Read-Host "Should we create it? (y/n)" }
-            }
+        if (!$shouldCreate) {
+            $log.error("Folder does not exist.")
+            return
         }
 
-        New-Item -ItemType Directory -Path $NewOutPath -Force | Out-Null
+        New-Item -ItemType Directory -Path $NewPath -Force | Out-Null
     }
 
-    Write-Host "`nSaving output path as the new default..." -ForegroundColor Cyan
-    $NewContent = $SCRIPT_CONTENT -replace $OutputPathRegexPattern, ('$1"' + $NewOutPath + '"')
-    Set-Content -Path $SCRIPT_PATH -Value $NewContent
-    Write-Host "[+] Default output path updated successfully!`n" -ForegroundColor Green
-    return
+    return $NewPath
 }
 
-$SearchScopeRegexPattern = '(?i)(\[string\]\$SearchScope\s*=\s*)"([^"]*)"'
+$BASE_TEMP_PATH = "$env:TEMP\OciLogs"
+$TempJsonPath = Join-Path $BASE_TEMP_PATH "oci_result.json"
+$TempErrPath = Join-Path $BASE_TEMP_PATH "oci_command_output.log"
 
-function Update-Scope {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$NewScope
-    )
-
-    if ([string]::IsNullOrWhiteSpace($NewScope)) {
-        Write-Host "[x] Search Scope is required to run this script." -ForegroundColor Red
-        return
+function Clear-Workspace {
+    if (Test-Path -Path $BASE_TEMP_PATH) {
+        Remove-Item -Path $BASE_TEMP_PATH -Recurse -Force | Out-Null
     }
-
-    Write-Host "Saving scope as the new default..." -ForegroundColor Cyan
-    $NewContent = $SCRIPT_CONTENT -replace $SearchScopeRegexPattern, ('$1"' + $NewScope + '"')
-    Set-Content -Path $SCRIPT_PATH -Value $NewContent
-    Write-Host "[+] Default search scope updated successfully!`n" -ForegroundColor Green
 }
 
-function Get-JqScalarValue {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$JsonPath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Filter
-    )
-
-    $Value = & jq -r $Filter $JsonPath 2>$null
-
-    if ($LASTEXITCODE -ne 0) {
-        return $null
-    }
-
-    foreach ($Line in @($Value)) {
-        if (![string]::IsNullOrWhiteSpace($Line) -and $Line -ne "null") {
-            return [string]$Line
+function CancelKeyPressed {
+    try {
+        if (![System.Console]::KeyAvailable) {
+            return $false
         }
+
+        $KeyPress = [System.Console]::ReadKey($true)
+        return (($KeyPress.Key -eq [System.ConsoleKey]::Escape) -or ($KeyPress.Key -eq [System.ConsoleKey]::Q))
     }
-
-    return $null
-}
-
-function Get-JqLongValue {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$JsonPath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Filter
-    )
-
-    $Value = Get-JqScalarValue -JsonPath $JsonPath -Filter $Filter
-    [long]$ParsedValue = 0
-
-    if ([long]::TryParse([string]$Value, [ref]$ParsedValue)) {
-        return $ParsedValue
+    catch {
+        return $false
     }
-
-    return $null
-}
-
-function Get-LogTimestamp {
-    param (
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        [string]$Line
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Line)) {
-        return $null
-    }
-    
-    $TimestampMatch = [regex]::Match($Line, '\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b')
-
-    if (!$TimestampMatch.Success) {
-        return $null
-    }
-
-    return ($TimestampMatch.Value -replace ' ', 'T')
 }
 
 function Format-LogProgress {
@@ -250,217 +251,262 @@ function Write-ProgressLine {
     Write-Host ("`r{0}{1}" -f $Message, (" " * 40)) -NoNewline
 }
 
-function Test-CancelKeyPressed {
-    try {
-        if (![System.Console]::KeyAvailable) {
-            return $false
-        }
+function Get-LogTimestamp {
+    param (
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$Line
+    )
 
-        $KeyPress = [System.Console]::ReadKey($true)
-        return (($KeyPress.Key -eq [System.ConsoleKey]::Escape) -or ($KeyPress.Key -eq [System.ConsoleKey]::Q))
+    if ([string]::IsNullOrWhiteSpace($Line)) {
+        return $null
     }
-    catch {
-        return $false
+
+    $TimestampMatch = [regex]::Match($Line, '\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b')
+
+    if (!$TimestampMatch.Success) {
+        return $null
     }
+
+    return ($TimestampMatch.Value -replace ' ', 'T')
 }
 
-if ($SetSearchScope) {
-    Write-Host "Enter the new default search scope (current: $SearchScope)"
-    $NewSearchScope = Read-Host "New search scope [enter to keep current]"
-
-    if ([string]::IsNullOrWhiteSpace($NewSearchScope)) {
-        return
-    }
-
-    Update-Scope -NewScope $NewSearchScope
+if ($Help) {
+    Get-Help $PSCommandPath -Detailed
     return
 }
 
+$IS_DEBUG = $PSBoundParameters.ContainsKey('Debug')
+$log = [Logger]::new()
+Clear-Workspace
+
+$log.debug("Debug mode enabled.")
+$log.debug("Loading config file...")
+
+$CONFIG_PATH = Join-Path -Path $PSScriptRoot -ChildPath "config.json"
+
+if (Test-Path -Path $CONFIG_PATH) {
+    $CONFIG = Get-Content -Path $CONFIG_PATH | ConvertFrom-Json
+} else {
+    $DefaultConfig = [PSCustomObject]@{
+        SearchScope = ""
+        OutputPath  = "./"
+    }
+    $DefaultConfig | ConvertTo-Json | Set-Content -Path $CONFIG_PATH
+}
+
+$log.debug("Config loaded:  $CONFIG")
+
+function Set-SearchScope {
+    param (
+        [string]$Scope = ""
+    )
+    $NewScope = Read -Prompt "Enter the new default search scope" -Default $Scope
+    $log.important("Saving search scope as the new default...")
+    $CONFIG.SearchScope = $NewScope
+    Set-Content -Path $CONFIG_PATH -Value ($CONFIG | ConvertTo-Json)
+    $log.success("Search scope updated successfully!")
+}
+
+if ([string]::IsNullOrWhiteSpace($CONFIG.SearchScope)) {
+    $log.error("SearchScope is not set in the config file.")
+
+    if (!(Confirm-Choice -Prompt "Would you like to set it now?")) {
+        $log.warn("The search scope is needed to run the script. You can set it in the config file of with the flag -SetSearchScope")
+        return
+    }
+
+    Set-SearchScope
+}
+
+if ($SetSearchScope) {
+    Set-SearchScope -Scope $CONFIG.SearchScope
+    return
+}
+
+if ($SetOutputPath) {
+    $NewOutPath = Read-Path -Prompt "Enter the new default output path" -Default "./"
+    $log.important("Saving folder as the new output default...")
+    $CONFIG.OutputPath = $NewOutPath
+    Set-Content -Path $CONFIG_PATH -Value ($CONFIG | ConvertTo-Json)
+    $log.success("Output path updated successfully!")
+    return
+}
+
+if (!(Test-Path $CONFIG.OutputPath)) {
+    New-Item -ItemType Directory -Path $CONFIG.OutputPath -Force | Out-Null
+}
+
+if (!(Test-Path $BASE_TEMP_PATH)) {
+    New-Item -ItemType Directory -Path $BASE_TEMP_PATH -Force | Out-Null
+}
+
 if (!(Get-Command oci -ErrorAction SilentlyContinue)) {
-    Write-Error "OCI CLI is not installed or not in your PATH. Please install it and authenticate before running this script."
+    $log.error("OCI CLI is not installed or not in your PATH. Please install it and authenticate before running this script.")
     return
 }
 
 if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
-    $InstallJq = Read-Host "jq is not installed or not in your PATH. Do you want to install it now? (y/n)"
-
-    $chosen = $false
-    $errorMessage = "[x] Please install jq manually (e.g. with winget install jqlang.jq) and ensure it's in your PATH."
-    while (-not $chosen) {
-        switch ($InstallJq) {
-            'Y' { $chosen = $true }
-            'y' { $chosen = $true }
-            'N' { Write-Host $errorMessage -ForegroundColor Red; return }
-            'n' { Write-Host $errorMessage -ForegroundColor Red; return }
-            default { Write-Host "[x] Invalid choice. Please enter y or n." -ForegroundColor Red; $InstallJq = Read-Host "Do you want to install jq now? (y/n)" }
-        }
+    if (!(Confirm-Choice "jq is not installed or not in your PATH. Do you want to install it now?")) {
+        $log.error("Please install jq manually (e.g. with winget install jqlang.jq) and ensure it's in your PATH.")
+        return
     }
 
-    Write-Host "Installing jq..."
+    $log.info("Installing jq...")
     winget install jqlang.jq --silent --accept-package-agreements --accept-source-agreements | Out-Null
 
     $MachinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
     $UserPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
 
+    $log.debug("Updating PATH...")
+
     $env:PATH = "$MachinePath;$UserPath"
 
     if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
-        Write-Error "[x] Failed to install or locate jq. Please install it manually." -ForegroundColor Red
+        $log.error("Failed to install or locate jq. Please install it manually.")
         return
     }
 
-    Write-Host "[+] jq has been installed successfully." -ForegroundColor Green
-}
-
-$SearchScopeSetInThisSession = $false
-if ([string]::IsNullOrWhiteSpace($SearchScope)) {
-    Write-Host "`n[!] No default Search Scope configured." -ForegroundColor Yellow
-    Write-Host "Either pass the -SearchScope flag or set your default scope" -Foreground Yellow
-    $SaveDefault = Read-Host "Would you like to set the default search scope now? (y/n)"
-
-    $chosen = $false
-    $errorMessage = "[x] No Search Scope provided. Please provide a valid scope to continue."
-    while (-not $chosen) {
-        switch ($SaveDefault) {
-            'Y' { $chosen = $true }
-            'y' { $chosen = $true }
-            'N' { Write-Host $errorMessage -ForegroundColor Red; return }
-            'n' { Write-Host $errorMessage -ForegroundColor Red; return }
-            default { Write-Host "[x] Invalid choice. Please enter y or n." -ForegroundColor Red; $SaveDefault = Read-Host "Would you like to set the default search scope now? (y/n)" }
-        }
-    }
-
-    $SearchScope = Read-Host "Enter the search scope"
-    Update-Scope -NewScope $SearchScope
-    $SearchScopeSetInThisSession = $true
+    $log.success("jq has been installed successfully.")
 }
 
 if ($StartTime -ge $EndTime) {
-    Write-Host "[x] Invalid Time Range: EndTime must be greater than StartTime." -ForegroundColor Red
+    $log.error("Invalid Time Range: EndTime must be greater than StartTime.")
     return
-}
-
-if (!(Test-Path $OutputPath)) {
-    New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 }
 
 $StartUtc = $StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 $EndUtc = $EndTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Target Resource : $ResourceName"
-Write-Host "Time Range (UTC): $StartUtc to $EndUtc"
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "1/3: Counting matching logs in OCI..."
-
-$AbsoluteOutputPath = (Get-Item $OutputPath).FullName
-$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-
-$TempJsonPath = Join-Path $env:TEMP "oci_raw_$Timestamp.json"
-$TempErrPath = Join-Path $env:TEMP "oci_err_$Timestamp.txt"
-$TempCountJsonPath = Join-Path $env:TEMP "oci_count_$Timestamp.json"
-$TempCountErrPath = Join-Path $env:TEMP "oci_count_err_$Timestamp.txt"
-
-$FinalLogPath = Join-Path $AbsoluteOutputPath "$ResourceName-$Timestamp.log"
-
-$JqFilter = '(.data.results[]?.data?.logContent?.data?.message // empty) | sub(\"^[^ ]+ (stdout|stderr) [A-Z] \"; \"\")'
+$log.important("======================================================")
+$log.important("Target Resource : $ResourceName")
+$log.important("Time Range (UTC): $StartUtc to $EndUtc")
+$log.important("======================================================")
+$log.write("1/3: Counting matching logs in OCI...")
 
 $SearchPattern = if ([string]::IsNullOrWhiteSpace($Namespace)) { "*$ResourceName*" } else { "*${Namespace}_*${ResourceName}*" }
-$SearchQuery = "search \`"$SearchScope\`" | where subject = '$SearchPattern' | sort by datetime asc"
-$CountSearchQuery = $SearchQuery -replace '\|\s*sort\s+by\s+datetime\s+asc\s*$', '| summarize count() as TotalLogs'
+$ScopeToUse = if ([string]::IsNullOrWhiteSpace($SearchScope)) { $CONFIG.SearchScope } else { $SearchScope }
+$SearchQuery = "search `"$ScopeToUse`" | where subject = '$SearchPattern'"
 
+$searchParamsJson = @{
+    "limit"             = 1
+    "searchQuery"       = "$SearchQuery | summarize count() as TotalLogs"
+    "timeEnd"           = $EndUtc
+    "timeStart"         = $StartUtc
+} | ConvertTo-Json
+
+$TempSearchJson = Join-Path -Path $BASE_TEMP_PATH -ChildPath "searchParams.json"
+[System.IO.File]::WriteAllLines($TempSearchJson, $searchParamsJson)
+
+$log.debug("searchParams: $searchParamsJson")
+
+$ArgsString = @(
+    "logging-search",
+    "search-logs",
+    "--from-json", "file://$TempSearchJson"
+)
+
+$log.cmd("oci", $ArgsString)
+
+$CountProcess = Start-Process -FilePath "oci" -ArgumentList $ArgsString -RedirectStandardOutput $TempJsonPath -RedirectStandardError $TempErrPath -NoNewWindow -Wait -PassThru
+
+function Validate-Oci-Return {
+    param (
+        [Parameter(Mandatory=$true)]
+        [int]$ExitCode
+    )
+
+    if ($ExitCode -eq 0) {
+        return
+    }
+
+    $ErrorResponse = Get-Content -Path $TempErrPath -Raw -ErrorAction SilentlyContinue
+    $log.error("OCI CLI failed or returned invalid JSON while counting logs. Error:")
+
+    if (![string]::IsNullOrWhiteSpace($ErrorResponse)) {
+        $log.error($ErrorResponse)
+    } else {
+        $log.error("Unknown error. Check your OCI authentication.")
+    }
+
+    exit 1
+}
+
+Validate-Oci-Return -ExitCode $CountProcess.ExitCode
+
+$CountObject = Get-Content -Path $TempJsonPath -Raw | ConvertFrom-Json
+$ExpectedTotalLogs = $CountObject.data.results[0].data.TotalLogs
+
+$log.debug("ExpectedTotalLogs: $ExpectedTotalLogs")
+
+if ($null -eq $ExpectedTotalLogs) {
+    $log.error("Could not parse total of logs from OCI.")
+    exit 1
+}
+
+if ($ExpectedTotalLogs -eq 0) {
+    $log.warn("OCI returned empty results. The pod didn't log anything in this timeframe, or the ResourceName is wrong.")
+    exit 0
+}
+
+$FileWindow = "$($StartTime.ToString('yyyyMMdd_HHmm'))_to_$($EndTime.ToString('yyyyMMdd_HHmm'))"
+$FinalLogPath = Join-Path (Get-Item $CONFIG.OutputPath).FullName "$ResourceName-$FileWindow.log"
+$ChunkLimit = 1000 # OCI limits the number of logs per call to 1k (╯‵□′)╯︵┻━┻
 $NextPage = $null
 $PageCount = 1
 $ProcessedPages = 0
+$TotalPages = [int][math]::Ceiling($ExpectedTotalLogs / $ChunkLimit)
 $TotalLogsSaved = 0
-$ChunkLimit = 1000 # OCI limits the number of logs per call to 1k (╯‵□′)╯︵┻━┻
 $LastLogTimestamp = "N/A"
 $CapturedStartTimestamp = $null
 $CapturedEndTimestamp = $null
 $UserCancelled = $false
 $SpinnerFrames = @('-', '\', '|', '/')
+$JqFilter = '.\"opc-next-page\" // \"\", ((.data.results[]?.data?.logContent?.data?.message // empty) | sub(\"^[^ ]+ (stdout|stderr) [A-Z] \"; \"\"))'
 
-$CountOciArgsString = "logging-search search-logs --search-query `"$CountSearchQuery`" --time-start $StartUtc --time-end $EndUtc --limit 1"
+$log.debug("ChunkLimit: $ChunkLimit")
+$log.info("Found $ExpectedTotalLogs matching logs across $TotalPages page(s).")
 
-if ($IS_DEBUG) {
-    Write-Host "`nOCI count command: oci $CountOciArgsString" -ForegroundColor Yellow
-}
-
-Remove-Item $TempCountJsonPath -Force -ErrorAction SilentlyContinue
-Remove-Item $TempCountErrPath -Force -ErrorAction SilentlyContinue
-
-$CountProcess = Start-Process -FilePath "oci" -ArgumentList $CountOciArgsString -RedirectStandardOutput $TempCountJsonPath -RedirectStandardError $TempCountErrPath -NoNewWindow -Wait -PassThru
-$CountString = Get-Content -Path $TempCountJsonPath -Raw -ErrorAction SilentlyContinue
-$CountJsonType = Get-JqScalarValue -JsonPath $TempCountJsonPath -Filter 'type'
-
-if ($CountProcess.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($CountString) -or [string]::IsNullOrWhiteSpace($CountJsonType)) {
-    $CountError = Get-Content -Path $TempCountErrPath -Raw -ErrorAction SilentlyContinue
-    Write-Host "`n[!] OCI CLI failed or returned invalid JSON while counting logs. Error:" -ForegroundColor Red
-
-    if (![string]::IsNullOrWhiteSpace($CountError)) {
-        Write-Host $CountError -ForegroundColor Red
-    }
-    elseif (![string]::IsNullOrWhiteSpace($CountString)) {
-        Write-Host $CountString -ForegroundColor Red
-    }
-    else {
-        Write-Host "Unknown error. Check your OCI authentication." -ForegroundColor Red
-    }
-
-    Remove-Item $TempCountJsonPath -Force -ErrorAction SilentlyContinue
-    Remove-Item $TempCountErrPath -Force -ErrorAction SilentlyContinue
-    return
-}
-
-$ExpectedTotalLogs = Get-JqLongValue -JsonPath $TempCountJsonPath -Filter '(.data.results[0].data.TotalLogs // .data.results[0].data.totalLogs // .data.results[0].data.Count // .data.results[0].data.count // empty)'
-
-if ($null -eq $ExpectedTotalLogs) {
-    Write-Host "`n[!] Could not parse TotalLogs from the OCI count response." -ForegroundColor Red
-    Remove-Item $TempCountJsonPath -Force -ErrorAction SilentlyContinue
-    Remove-Item $TempCountErrPath -Force -ErrorAction SilentlyContinue
-    return
-}
-
-Remove-Item $TempCountJsonPath -Force -ErrorAction SilentlyContinue
-Remove-Item $TempCountErrPath -Force -ErrorAction SilentlyContinue
-
-if ($ExpectedTotalLogs -eq 0) {
-    Write-Host "`n[!] OCI returned empty results. The pod didn't log anything in this timeframe, or the ResourceName is wrong." -ForegroundColor Yellow
-    return
-}
-
-$TotalPages = [int][math]::Ceiling($ExpectedTotalLogs / $ChunkLimit)
-Write-Host "[+] Found $ExpectedTotalLogs matching logs across $TotalPages page(s)." -ForegroundColor Green
-Write-Host "2/3: Fetching logs from OCI... Press Esc or Q to cancel safely."
+$log.info("Fetching logs from OCI... Press Esc or Q to cancel safely.")
 
 [System.Console]::CursorVisible = $false
-
 try {
     do {
-        $OciArgsString = "logging-search search-logs --search-query `"$SearchQuery`" --time-start $StartUtc --time-end $EndUtc --limit $ChunkLimit"
+        $searchParamsJson = @{
+            "limit"             = $ChunkLimit
+            "searchQuery"       = "$SearchQuery | sort by datetime asc"
+            "timeEnd"           = $EndUtc
+            "timeStart"         = $StartUtc
+        }
 
         if (![string]::IsNullOrWhiteSpace($NextPage)) {
-            $OciArgsString += " --page $NextPage"
+            $searchParamsJson["page"] = $NextPage
         }
 
-        if ($IS_DEBUG) {
-            Write-Host "`nOCI command: oci $OciArgsString" -ForegroundColor Yellow
+        if ($null -eq $NextPage -or $IS_DEBUG) {
+            $log.write(" ")
         }
+        $log.debug("Search params: $($searchParamsJson | ConvertTo-Json)")
+        [System.IO.File]::WriteAllLines($TempSearchJson, ($searchParamsJson | ConvertTo-Json))
+
+        $ArgsString = @(
+            "logging-search",
+            "search-logs",
+            "--from-json", "file://$TempSearchJson"
+        )
+
+        $log.cmd("oci", $ArgsString)
 
         $Counter = 0
+        $OciProcess = Start-Process -FilePath "oci" -ArgumentList $ArgsString -RedirectStandardOutput $TempJsonPath -RedirectStandardError $TempErrPath -NoNewWindow -PassThru
 
-        Remove-Item $TempJsonPath -Force -ErrorAction SilentlyContinue
-        Remove-Item $TempErrPath -Force -ErrorAction SilentlyContinue
-
-        $OciProcess = Start-Process -FilePath "oci" -ArgumentList $OciArgsString -RedirectStandardOutput $TempJsonPath -RedirectStandardError $TempErrPath -NoNewWindow -PassThru
-
-while (!$OciProcess.HasExited) {
-            if (Test-CancelKeyPressed) {
+        while (!$OciProcess.HasExited) {
+            if (CancelKeyPressed) {
                 $UserCancelled = $true
                 Stop-Process -Id $OciProcess.Id -Force -ErrorAction SilentlyContinue
                 $null = $OciProcess.WaitForExit(5000)
-                Write-Host "`n[!] Download aborted by user. Saving captured data..." -ForegroundColor Yellow
+                $log.write("")
+                $log.warn("Export aborted by user. Saving captured data...")
                 break
             }
 
@@ -475,67 +521,41 @@ while (!$OciProcess.HasExited) {
             break
         }
 
-        # Wait for file locks and exit codes to settle
         $OciProcess.WaitForExit()
-        
-        $OciString = Get-Content -Path $TempJsonPath -Raw -ErrorAction SilentlyContinue
-        
-        # Safely check the exit code (ignore it if it is $null)
-        $IsExitCodeError = ($null -ne $OciProcess.ExitCode -and $OciProcess.ExitCode -ne 0)
+        Validate-Oci-Return -ExitCode $OciProcess.Exit
 
-        # If it's an error, or the string is empty, or it doesn't start with a JSON bracket '{', then it failed!
-        if ($IsExitCodeError -or [string]::IsNullOrWhiteSpace($OciString) -or !$OciString.Trim().StartsWith("{")) {
-            $OciError = Get-Content -Path $TempErrPath -Raw -ErrorAction SilentlyContinue
-            Write-Host "`n[!] OCI CLI failed or returned invalid JSON on Page $PageCount. Error:" -ForegroundColor Red
+        $ProgressMessage = Format-LogProgress -CurrentPage $PageCount -CompletedPages $ProcessedPages -TotalPages $TotalPages -LastLogTimestamp $LastLogTimestamp -Spinner "jq"
+        Write-ProgressLine -Message $ProgressMessage
 
-            if (![string]::IsNullOrWhiteSpace($OciError)) {
-                Write-Host $OciError -ForegroundColor Red
-            }
-            elseif (![string]::IsNullOrWhiteSpace($OciString)) {
-                Write-Host $OciString -ForegroundColor Red
-            }
-            else {
-                Write-Host "Unknown error. Check your OCI authentication." -ForegroundColor Red
-            }
-            return
+        $CleanLogs = & jq -r $JqFilter $TempJsonPath
+
+        $NewNextPage = $CleanLogs[0]
+        $CleanLogLines = @($CleanLogs[1..($CleanLogs.Count - 1)])
+
+        if ($CleanLogLines -eq $null) {
+            $log.error("Could not parse the page result count with jq on Page $PageCount.")
+            exit 1
         }
 
-        $ChunkCount = Get-JqLongValue -JsonPath $TempJsonPath -Filter '(.data.results // []) | length'
+        $LogBlock = $CleanLogLines -join "`n"
+        [System.IO.File]::AppendAllText($FinalLogPath, $LogBlock + "`n")
 
-        if ($null -eq $ChunkCount) {
-            Write-Host "`n[!] Could not parse the page result count with jq on Page $PageCount." -ForegroundColor Red
-            return
-        }
+        $TotalLogsSaved += $CleanLogLines.Count
+        $NonEmptyLogLines = @($CleanLogLines | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
 
-        if ($ChunkCount -gt 0) {
-            $ProgressMessage = Format-LogProgress -CurrentPage $PageCount -CompletedPages $ProcessedPages -TotalPages $TotalPages -LastLogTimestamp $LastLogTimestamp -Spinner "jq"
-            Write-ProgressLine -Message $ProgressMessage
-            $CleanLogs = & jq -r $JqFilter $TempJsonPath
+        if ($NonEmptyLogLines.Count -gt 0) {
+            if ([string]::IsNullOrWhiteSpace($CapturedStartTimestamp)) {
+                $FirstLogTimestamp = Get-LogTimestamp -Line $NonEmptyLogLines[0]
 
-            if ($null -ne $CleanLogs) {
-                $CleanLogLines = @($CleanLogs)
-                $LogBlock = $CleanLogLines -join "`n"
-                [System.IO.File]::AppendAllText($FinalLogPath, $LogBlock + "`n")
-                $TotalLogsSaved += $CleanLogLines.Count
-
-                $NonEmptyLogLines = @($CleanLogLines | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
-
-                if ($NonEmptyLogLines.Count -gt 0) {
-                    if ([string]::IsNullOrWhiteSpace($CapturedStartTimestamp)) {
-                        $FirstLogTimestamp = Get-LogTimestamp -Line $NonEmptyLogLines[0]
-
-                        if (![string]::IsNullOrWhiteSpace($FirstLogTimestamp)) {
-                            $CapturedStartTimestamp = $FirstLogTimestamp
-                        }
-                    }
-
-                    $LastParsedLogTimestamp = Get-LogTimestamp -Line $NonEmptyLogLines[$NonEmptyLogLines.Count - 1]
-
-                    if (![string]::IsNullOrWhiteSpace($LastParsedLogTimestamp)) {
-                        $CapturedEndTimestamp = $LastParsedLogTimestamp
-                        $LastLogTimestamp = $LastParsedLogTimestamp
-                    }
+                if (![string]::IsNullOrWhiteSpace($FirstLogTimestamp)) {
+                    $CapturedStartTimestamp = $FirstLogTimestamp
                 }
+            }
+
+            $LastParsedLogTimestamp = Get-LogTimestamp -Line $NonEmptyLogLines[$NonEmptyLogLines.Count - 1]
+            if (![string]::IsNullOrWhiteSpace($LastParsedLogTimestamp)) {
+                $CapturedEndTimestamp = $LastParsedLogTimestamp
+                $LastLogTimestamp = $LastParsedLogTimestamp
             }
         }
 
@@ -543,93 +563,64 @@ while (!$OciProcess.HasExited) {
         $ProgressMessage = Format-LogProgress -CurrentPage $PageCount -CompletedPages $ProcessedPages -TotalPages $TotalPages -LastLogTimestamp $LastLogTimestamp -Spinner "ok"
         Write-ProgressLine -Message $ProgressMessage
 
-        $NextPageMatch = [regex]::Match($OciString, '"opc-next-page"\s*:\s*"([^"]+)"')
-        $NewNextPage = if ($NextPageMatch.Success) { $NextPageMatch.Groups[1].Value } else { $null }
-
         if (![string]::IsNullOrWhiteSpace($NewNextPage)) {
             if ($NextPage -eq $NewNextPage) {
-                Write-Host "`n[!] OCI API returned the exact same token. Stopping to prevent infinite loop." -ForegroundColor Yellow
+                $log.warn("OCI API returned the exact same token. Stopping to prevent infinite loop.")
                 break
             }
 
             $NextPage = $NewNextPage
             $PageCount++
-        }
-        else {
+        } else {
             $NextPage = $null
-            Write-Host ""
         }
     } while ($NextPage)
-}
-finally {
+} finally {
     [System.Console]::CursorVisible = $true
 }
 
-Remove-Item $TempJsonPath -Force -ErrorAction SilentlyContinue
-Remove-Item $TempErrPath -Force -ErrorAction SilentlyContinue
-Remove-Item $TempCountJsonPath -Force -ErrorAction SilentlyContinue
-Remove-Item $TempCountErrPath -Force -ErrorAction SilentlyContinue
+Clear-Workspace
 
 $CapturedStartDisplay = if (![string]::IsNullOrWhiteSpace($CapturedStartTimestamp)) { $CapturedStartTimestamp } else { $StartUtc }
 $CapturedEndDisplay = if (![string]::IsNullOrWhiteSpace($CapturedEndTimestamp)) { $CapturedEndTimestamp } elseif ($UserCancelled) { "Not available - no saved log timestamp found" } else { $EndUtc }
 
-if ($UserCancelled) {
-    Write-Host "`nDone! Processed $ProcessedPages/$TotalPages pages." -ForegroundColor Yellow
-}
-else {
-    Write-Host "`nDone! Processed $ProcessedPages/$TotalPages pages." -ForegroundColor Green
+$log.write("")
+if ($UserCancelled -and $ProcessedPages -lt $TotalPages) {
+    $log.info("User cancelled before all pages were processed.")
+    $log.info("Processed $ProcessedPages/$TotalPages pages.")
+} else {
+    $log.success("Processed $ProcessedPages/$TotalPages pages.")
 }
 
-Write-Host "Total Logs Saved: $TotalLogsSaved"
-Write-Host ""
-Write-Host "Timespan Captured:"
-Write-Host "Start: $CapturedStartDisplay"
-Write-Host "End:   $CapturedEndDisplay"
+$log.write("Total Logs Saved: $TotalLogsSaved")
+$log.write("`nTimespan Captured:")
+$log.write("Start: $CapturedStartDisplay")
+$log.write("End:   $CapturedEndDisplay")
 
 $LogFileExists = (Test-Path -LiteralPath $FinalLogPath)
 
 if ($LogFileExists) {
-    Write-Host ""
-    Write-Host "Saved to: $FinalLogPath" -ForegroundColor Cyan
-}
-elseif ($UserCancelled) {
-    Write-Host ""
-    Write-Host "[!] No completed page was saved before cancellation." -ForegroundColor Yellow
+    $log.success("Saved to: $FinalLogPath")
+} elseif ($UserCancelled) {
+    $log.warn("No completed page was saved before cancellation.")
 }
 
-$SearchScopeMatch = [regex]::Match($SCRIPT_CONTENT, $SearchScopeRegexPattern)
-$HardcodedScope = $SearchScopeMatch.Groups[2].Value
+if (!$UserCancelled -and !$CONFIG.SearchScope -and ![string]::IsNullOrWhiteSpace($SearchScope)) {
+    $log.warn("You provided a Search Scope, but the script currently has no default saved.")
 
-if (!$UserCancelled -and !$SearchScopeSetInThisSession -and ![string]::IsNullOrWhiteSpace($SearchScope) -and [string]::IsNullOrWhiteSpace($HardcodedScope)) {
-    Write-Host "`n[!] You provided a Search Scope, but the script currently has no default saved." -ForegroundColor Yellow
-    $SaveChoice = Read-Host "Do you want to save this scope as default? (y/n)"
-
-    $chosen = $false
-    $shouldSave = $false
-    while (-not $chosen) {
-        switch ($SaveChoice) {
-            'Y' { $chosen = $true; $shouldSave = $true }
-            'y' { $chosen = $true; $shouldSave = $true }
-            'N' { $chosen = $true }
-            'n' { $chosen = $true }
-            default { Write-Host "[x] Invalid choice. Please enter y or n." -ForegroundColor Red; $SaveChoice = Read-Host "Do you want to save this scope as default? (y/n)" }
-        }
-    }
-
-    if ($shouldSave) {
-        Update-Scope -NewScope $SearchScope
+    if (Confirm-Choice -Prompt "Do you want to save this scope as default?") {
+        Set-SearchScope $SearchScope
     }
 }
 
 if ($LogFileExists) {
-    Write-Host "`nPress [Enter] to open the log file, or any other key to exit..." -NoNewline -ForegroundColor Cyan
+    $log.important("Press [Enter] to open the log file, or any other key to exit...")
     $KeyPress = [System.Console]::ReadKey($true)
 
     if ($KeyPress.Key -eq 'Enter') {
-        Write-Host "`nOpening log file..." -ForegroundColor Green
+        $log.success("Opening log file...")
         Start-Process $FinalLogPath
-    }
-    else {
-        Write-Host ""
+    } else {
+        $log.write("Exiting without opening the log file.")
     }
 }
