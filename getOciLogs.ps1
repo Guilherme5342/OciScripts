@@ -291,6 +291,11 @@ $log.debug("Loading config file...")
 
 $CONFIG_PATH = if ([string]::IsNullOrWhiteSpace($ConfigPath)) { Join-Path -Path $PSScriptRoot -ChildPath "config.json" } else { $ConfigPath }
 
+if (!(Test-Path -Path $CONFIG_PATH) -and $ConfigPath) {
+    $log.error("Config file not found at $CONFIG_PATH")
+    exit 1
+}
+
 if (Test-Path -Path $CONFIG_PATH) {
     try {
         $CONFIG = Get-Content -Path $CONFIG_PATH | ConvertFrom-Json
@@ -301,9 +306,10 @@ if (Test-Path -Path $CONFIG_PATH) {
 } else {
     $DefaultConfig = [PSCustomObject]@{
         SearchScope = ""
-        OutputPath  = "./"
+        OutputPath  = ""
     }
-    $DefaultConfig | ConvertTo-Json | Set-Content -Path $CONFIG_PATH
+    $CONFIG = $DefaultConfig
+    Set-Content -Path $CONFIG_PATH -Value ($DefaultConfig | ConvertTo-Json)
 }
 
 $log.debug("Config loaded:  $CONFIG")
@@ -323,6 +329,7 @@ function Set-SearchScope {
     } else {
         $CONFIG.SearchScope = $SearchScope
     }
+
     $log.important("Saving search scope as the new default...")
     Set-Content -Path $CONFIG_PATH -Value ($CONFIG | ConvertTo-Json)
     $log.success("Search scope updated successfully!")
@@ -409,7 +416,6 @@ if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
     $UserPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
 
     $log.debug("Updating PATH...")
-
     $env:PATH = "$MachinePath;$UserPath"
 
     if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
@@ -671,6 +677,7 @@ if (!$UserCancelled -and !$CONFIG.OutputPath -and ![string]::IsNullOrWhiteSpace(
         Set-OutputPath -Path $OutputPath -UseFlagValue
     }
 }
+
 if ($LogFileExists) {
     $log.success("Saved to: $FinalLogPath")
 } elseif ($UserCancelled) {
