@@ -187,7 +187,7 @@ function Read-Path {
 
         if (!$shouldCreate) {
             $log.error("Folder does not exist.")
-            return
+            exit 1
         }
 
         New-Item -ItemType Directory -Path $NewPath -Force | Out-Null
@@ -279,7 +279,7 @@ function Get-LogTimestamp {
 
 if ($Help) {
     Get-Help $PSCommandPath -Detailed
-    return
+    exit 0
 }
 
 $IS_DEBUG = $PSBoundParameters.ContainsKey('Debug')
@@ -328,33 +328,63 @@ function Set-SearchScope {
     $log.success("Search scope updated successfully!")
 }
 
+if ($SetSearchScope) {
+    Set-SearchScope -Scope $CONFIG.SearchScope
+    exit 0
+}
+
 if ([string]::IsNullOrWhiteSpace($CONFIG.SearchScope) -and [string]::IsNullOrWhiteSpace($SearchScope)) {
     $log.error("SearchScope is not set in the config file.")
 
     if (!(Confirm-Choice -Prompt "Would you like to set it now?")) {
-        $log.warn("The search scope is needed to run the script. You can set it in the config file of with the flag -SetSearchScope")
-        return
+        $log.warn("The search scope is needed to run the script. You can set it in the config file or with the flag -SetSearchScope")
+        exit 1
     }
 
     Set-SearchScope
 }
 
-if ($SetSearchScope) {
-    Set-SearchScope -Scope $CONFIG.SearchScope
-    return
+function Set-OutputPath {
+    param (
+        [string]$Path,
+        [switch]$UseFlagValue
+    )
+
+    if ($null -eq $CONFIG.OutputPath) {
+        $CONFIG | Add-Member -MemberType NoteProperty -Name 'OutputPath' -Value $null
+    }
+
+    if (!$UseFlagValue) {
+        $Path = Read-Path -Prompt "Enter the new default output path" -Default $Path
+        $CONFIG.OutputPath = $Path
+    } else {
+        $CONFIG.OutputPath = $OutputPath
+    }
+
+    $log.important("Saving folder as the new output default...")
+    Set-Content -Path $CONFIG_PATH -Value ($CONFIG | ConvertTo-Json)
+    $log.success("Output path updated successfully!")
 }
 
 if ($SetOutputPath) {
-    $NewOutPath = Read-Path -Prompt "Enter the new default output path" -Default "./"
-    $log.important("Saving folder as the new output default...")
-    $CONFIG.OutputPath = $NewOutPath
-    Set-Content -Path $CONFIG_PATH -Value ($CONFIG | ConvertTo-Json)
-    $log.success("Output path updated successfully!")
-    return
+    Set-OutputPath -Path $CONFIG.OutputPath
+    exit 0
 }
 
-if (!(Test-Path $CONFIG.OutputPath)) {
-    New-Item -ItemType Directory -Path $CONFIG.OutputPath -Force | Out-Null
+if ([string]::IsNullOrWhiteSpace($CONFIG.OutputPath) -and [string]::IsNullOrWhiteSpace($OutputPath)) {
+    $log.error("OutputPath is not set in the config file.")
+
+    if (!(Confirm-Choice -Prompt "Would you like to set it now?")) {
+        $log.warn("The output path is needed to run the script. You can set it in the config file or with the flag -SetOutputPath")
+        exit 1
+    }
+
+    Set-OutputPath -Path "./"
+}
+
+$OutputPathToUse = if ([string]::IsNullOrWhiteSpace($OutputPath)) { $CONFIG.OutputPath } else { $OutputPath }
+if (!(Test-Path $OutputPathToUse)) {
+    New-Item -ItemType Directory -Path $OutputPathToUse -Force | Out-Null
 }
 
 if (!(Test-Path $BASE_TEMP_PATH)) {
@@ -363,13 +393,13 @@ if (!(Test-Path $BASE_TEMP_PATH)) {
 
 if (!(Get-Command oci -ErrorAction SilentlyContinue)) {
     $log.error("OCI CLI is not installed or not in your PATH. Please install it and authenticate before running this script.")
-    return
+    exit 1
 }
 
 if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
     if (!(Confirm-Choice "jq is not installed or not in your PATH. Do you want to install it now?")) {
         $log.error("Please install jq manually (e.g. with winget install jqlang.jq) and ensure it's in your PATH.")
-        return
+        exit 1
     }
 
     $log.info("Installing jq...")
@@ -384,7 +414,7 @@ if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
 
     if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
         $log.error("Failed to install or locate jq. Please install it manually.")
-        return
+        exit 1
     }
 
     $log.success("jq has been installed successfully.")
@@ -392,7 +422,7 @@ if (!(Get-Command jq -ErrorAction SilentlyContinue)) {
 
 if ($StartTime -ge $EndTime) {
     $log.error("Invalid Time Range: EndTime must be greater than StartTime.")
-    return
+    exit 1
 }
 
 $StartUtc = $StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -475,7 +505,7 @@ if ($ExpectedTotalLogs -eq 0) {
 
 $Timestamp = Get-Date -Format 'yyyyMMdd_HHmm'
 $FileWindow = "$($StartTime.ToString('yyyyMMdd_HHmm'))_to_$($EndTime.ToString('yyyyMMdd_HHmm'))"
-$FinalLogPath = Join-Path (Get-Item $CONFIG.OutputPath).FullName "$ResourceName-$FileWindow-$Timestamp.log"
+$FinalLogPath = Join-Path (Get-Item $OutputPathToUse).FullName "$ResourceName-$FileWindow-$Timestamp.log"
 $ChunkLimit = 1000 # OCI limits the number of logs per call to 1k (╯‵□′)╯︵┻━┻
 $NextPage = $null
 $PageCount = 1
@@ -626,18 +656,25 @@ $log.write("End:   $CapturedEndDisplay")
 
 $LogFileExists = (Test-Path -LiteralPath $FinalLogPath)
 
-if ($LogFileExists) {
-    $log.success("Saved to: $FinalLogPath")
-} elseif ($UserCancelled) {
-    $log.warn("No completed page was saved before cancellation.")
-}
-
 if (!$UserCancelled -and !$CONFIG.SearchScope -and ![string]::IsNullOrWhiteSpace($SearchScope)) {
     $log.warn("You provided a Search Scope, but the script currently has no default saved.")
 
     if (Confirm-Choice -Prompt "Do you want to save this scope as default?") {
         Set-SearchScope $SearchScope -UseFlagValue
     }
+}
+
+if (!$UserCancelled -and !$CONFIG.OutputPath -and ![string]::IsNullOrWhiteSpace($OutputPath)) {
+    $log.warn("You provided an Output Path, but the script currently has no default saved.")
+
+    if (Confirm-Choice -Prompt "Do you want to save this path as default?") {
+        Set-OutputPath -Path $OutputPath -UseFlagValue
+    }
+}
+if ($LogFileExists) {
+    $log.success("Saved to: $FinalLogPath")
+} elseif ($UserCancelled) {
+    $log.warn("No completed page was saved before cancellation.")
 }
 
 if ($LogFileExists) {
