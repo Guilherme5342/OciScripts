@@ -43,7 +43,10 @@ param (
     [string]$ResourceName,
 
     [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "The Kubernetes namespace (optional, but recommended for accuracy)")]
-    [string]$Namespace = "",
+    [string]$Namespace = $null,
+
+    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "Filter query, following the OCI Logging Query Language specification. See: https://docs.oracle.com/en-us/iaas/Content/Logging/Reference/query_language_specification.htm")]
+    [string]$Query = $null,
 
     [Parameter(Mandatory = $true, ParameterSetName = "LogSearch", HelpMessage = "Start time (e.g., '2026-07-06 10:00')")]
     [datetime]$StartTime,
@@ -388,6 +391,10 @@ $SearchPattern = if ([string]::IsNullOrWhiteSpace($Namespace)) { "*$ResourceName
 $ScopeToUse = if ([string]::IsNullOrWhiteSpace($SearchScope)) { $CONFIG.SearchScope } else { $SearchScope }
 $SearchQuery = "search `"$ScopeToUse`" | where subject = '$SearchPattern'"
 
+if (![string]::IsNullOrWhiteSpace($Query)) {
+    $SearchQuery = "$SearchQuery | where $Query"
+}
+
 $searchParamsJson = @{
     "limit"             = 1
     "searchQuery"       = "$SearchQuery | summarize count() as TotalLogs"
@@ -395,7 +402,7 @@ $searchParamsJson = @{
     "timeStart"         = $StartUtc
 } | ConvertTo-Json
 
-$TempSearchJson = Join-Path -Path $BASE_TEMP_PATH -ChildPath "searchParams.json"
+$TempSearchJson = Join-Path -Path $BASE_TEMP_PATH -ChildPath "oci_search_params.json"
 [System.IO.File]::WriteAllLines($TempSearchJson, $searchParamsJson)
 
 $log.debug("searchParams: $searchParamsJson")
