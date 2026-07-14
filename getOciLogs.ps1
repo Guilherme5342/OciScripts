@@ -202,7 +202,7 @@ $TempErrPath = Join-Path $BASE_TEMP_PATH "oci_command_output.log"
 
 function Clear-Workspace {
     if (Test-Path -Path $BASE_TEMP_PATH) {
-        Remove-Item -Path $BASE_TEMP_PATH -Recurse -Force | Out-Null
+        Remove-Item -Path $BASE_TEMP_PATH -Recurse -ErrorAction SilentlyContinue | Out-Null
     }
 }
 
@@ -292,7 +292,12 @@ $log.debug("Loading config file...")
 $CONFIG_PATH = if ([string]::IsNullOrWhiteSpace($ConfigPath)) { Join-Path -Path $PSScriptRoot -ChildPath "config.json" } else { $ConfigPath }
 
 if (Test-Path -Path $CONFIG_PATH) {
-    $CONFIG = Get-Content -Path $CONFIG_PATH | ConvertFrom-Json
+    try {
+        $CONFIG = Get-Content -Path $CONFIG_PATH | ConvertFrom-Json
+    } catch {
+        $log.error("Failed to load config file: $_")
+        exit 1
+    }
 } else {
     $DefaultConfig = [PSCustomObject]@{
         SearchScope = ""
@@ -305,16 +310,25 @@ $log.debug("Config loaded:  $CONFIG")
 
 function Set-SearchScope {
     param (
-        [string]$Scope = ""
+        [string]$Scope = "",
+        [switch]$UseFlagValue
     )
-    $NewScope = Read -Prompt "Enter the new default search scope" -Default $Scope
+    if ($null -eq $CONFIG.SearchScope) {
+        $CONFIG | Add-Member -MemberType NoteProperty -Name 'SearchScope' -Value $null
+    }
+
+    if (!$UseFlagValue) {
+        $NewScope = Read -Prompt "Enter the new default search scope" -Default $Scope
+        $CONFIG.SearchScope = $NewScope
+    } else {
+        $CONFIG.SearchScope = $SearchScope
+    }
     $log.important("Saving search scope as the new default...")
-    $CONFIG.SearchScope = $NewScope
     Set-Content -Path $CONFIG_PATH -Value ($CONFIG | ConvertTo-Json)
     $log.success("Search scope updated successfully!")
 }
 
-if ([string]::IsNullOrWhiteSpace($CONFIG.SearchScope)) {
+if ([string]::IsNullOrWhiteSpace($CONFIG.SearchScope) -and [string]::IsNullOrWhiteSpace($SearchScope)) {
     $log.error("SearchScope is not set in the config file.")
 
     if (!(Confirm-Choice -Prompt "Would you like to set it now?")) {
@@ -622,7 +636,7 @@ if (!$UserCancelled -and !$CONFIG.SearchScope -and ![string]::IsNullOrWhiteSpace
     $log.warn("You provided a Search Scope, but the script currently has no default saved.")
 
     if (Confirm-Choice -Prompt "Do you want to save this scope as default?") {
-        Set-SearchScope $SearchScope
+        Set-SearchScope $SearchScope -UseFlagValue
     }
 }
 
