@@ -43,10 +43,10 @@ param (
     [string]$ResourceName,
 
     [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "The Kubernetes namespace (optional, but recommended for accuracy)")]
-    [string]$Namespace = $null,
+    [string]$Namespace,
 
     [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "Filter query, following the OCI Logging Query Language specification. See: https://docs.oracle.com/en-us/iaas/Content/Logging/Reference/query_language_specification.htm")]
-    [string]$Query = $null,
+    [string]$Query,
 
     [Parameter(Mandatory = $true, ParameterSetName = "LogSearch", HelpMessage = "Start time (e.g., '2026-07-06 10:00')")]
     [datetime]$StartTime,
