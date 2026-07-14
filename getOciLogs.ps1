@@ -420,7 +420,7 @@ $log.cmd("oci", $ArgsString)
 
 $CountProcess = Start-Process -FilePath "oci" -ArgumentList $ArgsString -RedirectStandardOutput $TempJsonPath -RedirectStandardError $TempErrPath -NoNewWindow -Wait -PassThru
 
-function Validate-Oci-Return {
+function Confirm-Oci-Return {
     param (
         [Parameter(Mandatory=$true)]
         [int]$ExitCode
@@ -442,7 +442,7 @@ function Validate-Oci-Return {
     exit 1
 }
 
-Validate-Oci-Return -ExitCode $CountProcess.ExitCode
+Confirm-Oci-Return -ExitCode $CountProcess.ExitCode
 
 $CountObject = Get-Content -Path $TempJsonPath -Raw | ConvertFrom-Json
 $ExpectedTotalLogs = $CountObject.data.results[0].data.TotalLogs
@@ -535,7 +535,7 @@ try {
         }
 
         $OciProcess.WaitForExit()
-        Validate-Oci-Return -ExitCode $OciProcess.Exit
+        Confirm-Oci-Return -ExitCode $OciProcess.Exit
 
         $ProgressMessage = Format-LogProgress -CurrentPage $PageCount -CompletedPages $ProcessedPages -TotalPages $TotalPages -LastLogTimestamp $LastLogTimestamp -Spinner "jq"
         Write-ProgressLine -Message $ProgressMessage
@@ -545,7 +545,7 @@ try {
         $NewNextPage = $CleanLogs[0]
         $CleanLogLines = @($CleanLogs[1..($CleanLogs.Count - 1)])
 
-        if ($CleanLogLines -eq $null) {
+        if ($null -eq $CleanLogLines) {
             $log.error("Could not parse the page result count with jq on Page $PageCount.")
             exit 1
         }
