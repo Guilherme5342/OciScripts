@@ -60,6 +60,9 @@ param (
     [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "OCID of the search scope. Defaults to the search scope in the config file.")]
     [string]$SearchScope,
 
+    [Parameter(Mandatory = $false, ParameterSetName = "LogSearch", HelpMessage = "Path to the config file to be used for this session.")]
+    [string]$ConfigPath,
+
     [Parameter(Mandatory = $false, ParameterSetName = "Config", HelpMessage = "Update the default search scope and exit without searching.")]
     [switch]$SetSearchScope,
 
@@ -286,7 +289,7 @@ Clear-Workspace
 $log.debug("Debug mode enabled.")
 $log.debug("Loading config file...")
 
-$CONFIG_PATH = Join-Path -Path $PSScriptRoot -ChildPath "config.json"
+$CONFIG_PATH = if ([string]::IsNullOrWhiteSpace($ConfigPath)) { Join-Path -Path $PSScriptRoot -ChildPath "config.json" } else { $ConfigPath }
 
 if (Test-Path -Path $CONFIG_PATH) {
     $CONFIG = Get-Content -Path $CONFIG_PATH | ConvertFrom-Json
