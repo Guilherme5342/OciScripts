@@ -456,8 +456,9 @@ if ($ExpectedTotalLogs -eq 0) {
     exit 0
 }
 
+$Timestamp = Get-Date -Format 'yyyyMMdd_HHmm'
 $FileWindow = "$($StartTime.ToString('yyyyMMdd_HHmm'))_to_$($EndTime.ToString('yyyyMMdd_HHmm'))"
-$FinalLogPath = Join-Path (Get-Item $CONFIG.OutputPath).FullName "$ResourceName-$FileWindow.log"
+$FinalLogPath = Join-Path (Get-Item $CONFIG.OutputPath).FullName "$ResourceName-$FileWindow-$Timestamp.log"
 $ChunkLimit = 1000 # OCI limits the number of logs per call to 1k (╯‵□′)╯︵┻━┻
 $NextPage = $null
 $PageCount = 1
@@ -472,7 +473,9 @@ $SpinnerFrames = @('-', '\', '|', '/')
 $JqFilter = '.\"opc-next-page\" // \"\", ((.data.results[]?.data?.logContent?.data?.message // empty) | sub(\"^[^ ]+ (stdout|stderr) [A-Z] \"; \"\"))'
 
 $log.debug("ChunkLimit: $ChunkLimit")
-$log.info("Found $ExpectedTotalLogs matching logs across $TotalPages page(s).")
+
+$pages = if ($TotalPages -gt 1) { "pages" } else { "page" }
+$log.info("Found $ExpectedTotalLogs matching logs in $TotalPages $pages.")
 
 $log.info("Fetching logs from OCI... Press Esc or Q to cancel safely.")
 
